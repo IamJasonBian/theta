@@ -1,6 +1,13 @@
 """
-One-off script: fetch RH equity from the allocation-engine snapshot
-service, fetch the theta ledger, and compare them via CompareCategoryOperator.
+One-off script: fetch the RH buying-power figure from the allocation-engine
+snapshot service, fetch the theta ledger, and compare them via
+CompareCategoryOperator.
+
+Note on naming: the ledger category is "equity/rh" because that's how the
+user's accounting treats it — capital available to deploy. The underlying
+value on the allocation engine is `account.buying_power`, NOT
+`account.equity` (that's the gross net-worth figure including borrowed
+positions, which is not what the ledger tracks).
 
 Usage
 -----
@@ -95,13 +102,17 @@ def latest_snapshot_key(allocation_engine_base: str) -> str:
     raise RuntimeError("no usable snapshot key returned by allocation engine")
 
 
-def fetch_prod_equity(
+def fetch_prod_buying_power(
     allocation_engine_base: str,
     snapshot_key: str | None = None,
 ) -> tuple[Decimal, str]:
-    """Fetch the account equity from the given (or latest) snapshot.
+    """Fetch the account.buying_power from the given (or latest) snapshot.
 
-    Returns (equity, snapshot_key_used)."""
+    This is the value we compare against the ledger's equity/rh category —
+    the user's accounting treats buying power as "capital available to
+    deploy", which is what the equity ledger kind represents.
+
+    Returns (buying_power, snapshot_key_used)."""
     if snapshot_key is None:
         snapshot_key = latest_snapshot_key(allocation_engine_base)
     data = _get_json(
@@ -109,11 +120,11 @@ def fetch_prod_equity(
     )
     snap = data.get("data") or {}
     account = snap.get("account") or {}
-    if "equity" not in account:
+    if "buying_power" not in account:
         raise RuntimeError(
-            f"snapshot {snapshot_key!r} has no account.equity field"
+            f"snapshot {snapshot_key!r} has no account.buying_power field"
         )
-    return Decimal(str(account["equity"])), snapshot_key
+    return Decimal(str(account["buying_power"])), snapshot_key
 
 
 # ---- theta client ----
@@ -147,10 +158,11 @@ def run(
     threshold: Decimal = Decimal("0.05"),
 ) -> dict[str, Any]:
     """Fetch both sides and run the DQ operator. Returns the full report."""
-    prod_value, snapshot_key = fetch_prod_equity(allocation_engine_base)
+    prod_value, snapshot_key = fetch_prod_buying_power(allocation_engine_base)
     ledger = fetch_ledger(theta_base)
     result = compare(ledger, prod_value, category, threshold)
     result["_prod_snapshot_key"] = snapshot_key
+    result["_prod_field"] = "account.buying_power"
     result["_allocation_engine_base"] = allocation_engine_base
     result["_theta_base"] = theta_base
     return result

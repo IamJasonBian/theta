@@ -727,15 +727,21 @@ class DqIntegrationStubTests(unittest.TestCase):
     """Spins up a stdlib HTTP server that mocks BOTH the allocation-engine
     snapshot API and the theta ledger API, then runs the real
     fetch_rh_equity.run() function against the stub. Proves the whole
-    fetch-and-compare flow end-to-end without touching the real network."""
+    fetch-and-compare flow end-to-end without touching the real network.
 
-    PROD_EQUITY = Decimal("92040.57")
+    We stub buying_power (not equity) because that's what equity/rh
+    actually tracks — see the docstring at the top of
+    scripts/fetch_rh_equity.py for the rationale."""
+
+    # Matches e1 + e2 in _ledger_fixture() (92000.00) within 5% threshold.
+    # We use buying_power as the comparison field now.
+    PROD_BUYING_POWER = Decimal("92040.57")
 
     class _StubHandler(BaseHTTPRequestHandler):
         # Filled in by setUpClass so the closure over instance state is
         # visible inside do_GET.
         ledger: dict = {}
-        prod_equity: Decimal = Decimal("0")
+        prod_buying_power: Decimal = Decimal("0")
 
         def log_message(self, *a, **kw):  # silent
             pass
@@ -763,9 +769,11 @@ class DqIntegrationStubTests(unittest.TestCase):
                     "data": {
                         "timestamp": "2026-04-09T22:09:57.000Z",
                         "account": {
-                            "equity": float(self.prod_equity),
+                            # equity stays a large number but the client
+                            # must NOT read it — it should read buying_power
+                            "equity": 999999.99,
                             "cash": -83438.81,
-                            "buying_power": 7200.02,
+                            "buying_power": float(self.prod_buying_power),
                             "portfolio_value": 175479.38,
                         },
                         "positions": [],
@@ -780,7 +788,7 @@ class DqIntegrationStubTests(unittest.TestCase):
     def setUpClass(cls):
         # Install state on the handler class so requests can see it
         cls._StubHandler.ledger = _ledger_fixture()
-        cls._StubHandler.prod_equity = cls.PROD_EQUITY
+        cls._StubHandler.prod_buying_power = cls.PROD_BUYING_POWER
         # Port 0 → OS picks a free port
         cls.server = HTTPServer(("127.0.0.1", 0), cls._StubHandler)
         cls.base = f"http://127.0.0.1:{cls.server.server_address[1]}"
@@ -799,21 +807,29 @@ class DqIntegrationStubTests(unittest.TestCase):
         cls.server.shutdown()
         cls.thread.join(timeout=2)
 
-    def test_fetch_prod_equity_picks_real_snapshot(self):
-        eq, key = self.fetch.fetch_prod_equity(self.base)
-        self.assertEqual(Decimal(str(eq)), self.PROD_EQUITY)
+    def test_fetch_prod_buying_power_picks_real_snapshot(self):
+        bp, key = self.fetch.fetch_prod_buying_power(self.base)
+        self.assertEqual(Decimal(str(bp)), self.PROD_BUYING_POWER)
         # The stub returns "latest" first and then a real key; the client
         # must skip "latest" and use the real one.
         self.assertEqual(key, "2026-04-09T22-09-57")
+
+    def test_fetch_does_not_accidentally_read_equity_field(self):
+        """Regression: we flipped from account.equity (gross) to
+        account.buying_power (deployable). The stub serves equity=999999.99
+        on purpose — if the client accidentally reads it, comparison math
+        will blow up."""
+        bp, _ = self.fetch.fetch_prod_buying_power(self.base)
+        self.assertNotEqual(Decimal(str(bp)), Decimal("999999.99"))
 
     def test_fetch_ledger_returns_stub_data(self):
         ledger = self.fetch.fetch_ledger(self.base)
         self.assertIn("e1", ledger["equity"])
         self.assertIn("e2", ledger["equity"])
 
-    def test_full_run_detects_severe_drift(self):
-        # Ledger equity/rh = 92000, prod = 92040.57 → delta 40.57
-        # → delta_pct ~0.044%  → well within 5% threshold → match
+    def test_full_run_detects_match(self):
+        # Ledger equity/rh = 92000, prod buying_power = 92040.57 → delta 40.57
+        # → delta_pct ~0.044% → well within 5% threshold → match
         result = self.fetch.run(
             allocation_engine_base=self.base,
             theta_base=self.base,
@@ -823,6 +839,7 @@ class DqIntegrationStubTests(unittest.TestCase):
         self.assertEqual(result["flag"], "match")
         self.assertEqual(result["match_count"], 2)
         self.assertEqual(result["_prod_snapshot_key"], "2026-04-09T22-09-57")
+        self.assertEqual(result["_prod_field"], "account.buying_power")
 
     def test_full_run_flags_drift_with_tight_threshold(self):
         # Same numbers, but now require 0.001% drift → must flag
