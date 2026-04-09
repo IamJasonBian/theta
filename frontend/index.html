@@ -139,7 +139,7 @@
     </div>
 
     <form id="form" autocomplete="off">
-      <label>id <input name="id" required placeholder="client-supplied id"
+      <label>id <input name="id" placeholder="leave blank → 'default' slot"
              autocapitalize="none" autocorrect="off" spellcheck="false" /></label>
 
       <!-- payment -->
@@ -147,7 +147,7 @@
         <label>payee <input name="payee" placeholder="Whole Foods" autocapitalize="words" /></label>
         <label>amount <input name="amount" placeholder="184.32"
                inputmode="decimal" autocomplete="off" /></label>
-        <label>card_id <input name="card_id" placeholder="sapphire"
+        <label>card_id <input name="card_id" placeholder="blank → default card"
                autocapitalize="none" autocorrect="off" spellcheck="false" /></label>
         <label>txn_date <input name="txn_date" type="date" /></label>
         <label>expense_account <input name="expense_account" placeholder="Expenses:Groceries"
@@ -189,7 +189,7 @@
           </select>
         </label>
         <label>next_charge_date <input name="next_charge_date" type="date" /></label>
-        <label>funding_card_id <input name="funding_card_id" placeholder="sapphire"
+        <label>funding_card_id <input name="funding_card_id" placeholder="blank → default card"
                autocapitalize="none" autocorrect="off" spellcheck="false" /></label>
         <label>horizon <input name="horizon" type="number" value="12"
                inputmode="numeric" /></label>
@@ -211,13 +211,44 @@ const $ = sel => document.querySelector(sel);
 const $$ = sel => [...document.querySelectorAll(sel)];
 
 let currentTab = 'payment';
+// Mirror of /ledger fetched by refresh(). Used for the "id already exists"
+// check before a PUT so we don't silently clobber an entry the user can
+// actually see on the right-hand panel.
+let latestLedger = { payment: {}, debt: {}, equity: {}, sub: {} };
+
+// Short, unique-enough ids so every fresh form load gets its own slot.
+// Format: "<kind>-<date>-<rand>", e.g. "debt-20260409-k4p2m".
+function genId(kind) {
+  const now = new Date();
+  const ymd = now.toISOString().slice(0, 10).replaceAll('-', '');
+  const rand = Math.random().toString(36).slice(2, 7);
+  return `${kind}-${ymd}-${rand}`;
+}
+
+// Fill the id field with a fresh auto-generated id. Also stamp a flag so
+// we can tell "user hasn't touched it" vs. "user typed something" later.
+function prefillId() {
+  const el = $('#form').elements['id'];
+  el.value = genId(currentTab);
+  el.dataset.autogen = '1';
+}
 
 // tab switch
 $$('.tabs button').forEach(b => b.addEventListener('click', () => {
   currentTab = b.dataset.tab;
   $$('.tabs button').forEach(x => x.classList.toggle('active', x === b));
   $$('[data-fields]').forEach(g => g.hidden = g.dataset.fields !== currentTab);
+  // Regenerate the id on tab switch so the kind prefix matches the new
+  // tab — but only if the user hasn't typed their own id manually.
+  const idEl = $('#form').elements['id'];
+  if (idEl.dataset.autogen === '1') prefillId();
 }));
+
+// Once the user types in the id field themselves, stop auto-regenerating
+// it — that's them declaring "I want to upsert this specific id".
+$('#form').elements['id'].addEventListener('input', (e) => {
+  e.target.dataset.autogen = '';
+});
 
 // build PUT body from current form
 function buildBody() {
@@ -227,7 +258,10 @@ function buildBody() {
     return {
       payee: v('payee'),
       amount: v('amount'),
-      card_id: v('card_id'),
+      // Blank → 'default' slot. The API guarantees a synthetic "default"
+      // card exists in the wallet so this resolves without requiring
+      // the user to configure a wallet first.
+      card_id: v('card_id') || 'default',
       txn_date: v('txn_date'),
       expense_account: v('expense_account') || 'Expenses:Uncategorized',
     };
@@ -255,7 +289,9 @@ function buildBody() {
       amount: v('amount_sub'),
       frequency: v('frequency'),
       next_charge_date: v('next_charge_date'),
-      funding_card_id: v('funding_card_id'),
+      // Same 'default' fallback as payment — blank funding card resolves
+      // to the synthetic "default" debit card.
+      funding_card_id: v('funding_card_id') || 'default',
       horizon: parseInt(v('horizon') || '12', 10),
     };
   }
@@ -263,8 +299,26 @@ function buildBody() {
 
 $('#form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const id = $('#form').elements['id'].value.trim();
-  if (!id) return setStatus('id required', false);
+  const idEl = $('#form').elements['id'];
+  let id = idEl.value.trim();
+  const isDefault = !id;          // user cleared the field → quick-entry slot
+  if (isDefault) id = 'default';
+
+  // Collision check: if this id already exists under this kind and the
+  // user typed it manually (i.e. autogen flag is off) AND it isn't the
+  // quick-entry 'default' slot (which is designed to be overwritten),
+  // confirm before we silently clobber the prior entry. Auto-generated
+  // ids skip the check because they're designed to be unique — any
+  // collision there is astronomically rare.
+  const isAutogen = idEl.dataset.autogen === '1';
+  if (!isAutogen && !isDefault
+      && latestLedger[currentTab] && latestLedger[currentTab][id]) {
+    const ok = confirm(
+      `${currentTab}/${id} already exists.\n\nPUT will overwrite it. Continue?`
+    );
+    if (!ok) return setStatus('cancelled', false);
+  }
+
   const body = buildBody();
   const res = await fetch(`/ledger/${currentTab}/${encodeURIComponent(id)}`, {
     method: 'PUT',
@@ -274,8 +328,35 @@ $('#form').addEventListener('submit', async (e) => {
   const data = await res.json();
   if (!res.ok) return setStatus(`${res.status}: ${data.error || 'error'}`, false);
   setStatus(`upserted ${currentTab}/${id}`, true);
+
+  // Reset the form fields for the current tab so the next submit is a
+  // clean slate. We can't just call form.reset() because that would
+  // clobber the id with the HTML default (empty), and also reset the
+  // frequency <select> which has a meaningful default we want to keep.
+  resetFieldsForTab(currentTab);
+  prefillId();
+
   refresh();
 });
+
+// Clear the visible fields for the given tab. Shared fields (id) are
+// handled separately by prefillId(). The frequency select keeps its
+// current value rather than reverting, so repeat sub entries feel fast.
+function resetFieldsForTab(tab) {
+  const f = $('#form');
+  const clear = (name) => { if (f.elements[name]) f.elements[name].value = ''; };
+  if (tab === 'payment') {
+    ['payee','amount','card_id','txn_date','expense_account'].forEach(clear);
+  } else if (tab === 'debt') {
+    ['creditor','principal','due_date','apr','offset_account'].forEach(clear);
+  } else if (tab === 'equity') {
+    ['source','amount_eq','received_on','target_bucket'].forEach(clear);
+  } else if (tab === 'sub') {
+    ['service','amount_sub','next_charge_date','funding_card_id'].forEach(clear);
+    // leave frequency + horizon at whatever the user picked — likely
+    // reused across multiple subs being entered in a row
+  }
+}
 
 function setStatus(msg, ok) {
   const el = $('#status');
@@ -286,6 +367,7 @@ function setStatus(msg, ok) {
 async function refresh() {
   const res = await fetch('/ledger');
   const data = await res.json();
+  latestLedger = data;  // cache for collision-check in submit handler
   const root = $('#ledger');
   root.innerHTML = '';
   for (const kind of ['payment', 'debt', 'equity', 'sub']) {
@@ -335,6 +417,7 @@ function escapeHtml(s) {
   return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 }
 
+prefillId();
 refresh();
 
 // ---- PWA service worker registration ----

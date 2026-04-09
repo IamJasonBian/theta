@@ -222,31 +222,50 @@ def build_store() -> LedgerStore:
 
 # ---------- wallet loader ----------
 
+def _default_card() -> Card:
+    """Synthetic placeholder card. When a user PUTs a payment or sub
+    without specifying a card_id, the API coerces it to "default" and
+    resolves against this card. It's a debit card so the payment
+    operator short-circuits the temporal/billing-cycle logic — no APR,
+    no statement close, no interest math. Use it as a cashflow bucket
+    until the user configures a real wallet."""
+    return Card(
+        id="default",
+        name="Default",
+        kind="debit",
+        apr=Decimal("0"),
+        balance=Decimal("0"),
+    )
+
+
 def load_wallet(path: str | None) -> dict[str, Card]:
-    if not path or not os.path.exists(path):
-        return {}
-    with open(path) as f:
-        data = json.load(f)
     wallet: dict[str, Card] = {}
-    for raw in data:
-        wallet[raw["id"]] = Card(
-            id=raw["id"],
-            name=raw["name"],
-            kind=raw["kind"],
-            apr=Decimal(str(raw.get("apr", "0"))),
-            balance=Decimal(str(raw.get("balance", "0"))),
-            statement_close_day=raw.get("statement_close_day"),
-            grace_period_days=raw.get("grace_period_days", 21),
-            last_statement_balance=Decimal(str(raw.get("last_statement_balance", "0"))),
-            last_statement_close=(
-                date.fromisoformat(raw["last_statement_close"])
-                if raw.get("last_statement_close") else None
-            ),
-            credit_limit=(
-                Decimal(str(raw["credit_limit"]))
-                if raw.get("credit_limit") is not None else None
-            ),
-        )
+    if path and os.path.exists(path):
+        with open(path) as f:
+            data = json.load(f)
+        for raw in data:
+            wallet[raw["id"]] = Card(
+                id=raw["id"],
+                name=raw["name"],
+                kind=raw["kind"],
+                apr=Decimal(str(raw.get("apr", "0"))),
+                balance=Decimal(str(raw.get("balance", "0"))),
+                statement_close_day=raw.get("statement_close_day"),
+                grace_period_days=raw.get("grace_period_days", 21),
+                last_statement_balance=Decimal(str(raw.get("last_statement_balance", "0"))),
+                last_statement_close=(
+                    date.fromisoformat(raw["last_statement_close"])
+                    if raw.get("last_statement_close") else None
+                ),
+                credit_limit=(
+                    Decimal(str(raw["credit_limit"]))
+                    if raw.get("credit_limit") is not None else None
+                ),
+            )
+    # Always guarantee a "default" card exists — lets the frontend send
+    # payments / subs with a blank card_id field and get a valid journal
+    # without the user having to seed a wallet file first.
+    wallet.setdefault("default", _default_card())
     return wallet
 
 

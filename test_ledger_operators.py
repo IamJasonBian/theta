@@ -54,7 +54,12 @@ from equity_operator import AddEquityOperator, Equity  # noqa: E402
 from sub_operator import AddSubscriptionOperator, Subscription  # noqa: E402
 from payment_operator import Card  # noqa: E402
 import api as ledger_api  # noqa: E402
-from api import InMemoryLedgerStore, SqliteLedgerStore, build_store  # noqa: E402
+from api import (  # noqa: E402
+    InMemoryLedgerStore,
+    SqliteLedgerStore,
+    build_store,
+    load_wallet,
+)
 
 
 # ---------- DebtOperator ----------
@@ -356,6 +361,20 @@ class ApiE2ETests(unittest.TestCase):
             # 16px inputs to kill iOS zoom-on-focus
             self.assertIn('font-size: 16px', body)
 
+    def test_frontend_has_id_handling_js(self):
+        """New id behavior must be in the served HTML: auto-gen prefill,
+        collision confirm, 'default' fallback, form reset after submit."""
+        req = urllib.request.Request(self.base + "/")
+        with urllib.request.urlopen(req) as resp:
+            body = resp.read().decode()
+            self.assertIn("function genId(", body)
+            self.assertIn("function prefillId(", body)
+            self.assertIn("function resetFieldsForTab(", body)
+            self.assertIn("'default'", body)
+            self.assertIn("latestLedger", body)
+            self.assertIn("already exists", body)
+            self.assertIn("leave blank", body)  # placeholder hint
+
     def test_bad_json_returns_400(self):
         req = urllib.request.Request(
             self.base + "/ledger/debt/x",
@@ -368,6 +387,82 @@ class ApiE2ETests(unittest.TestCase):
             self.fail("expected HTTPError")
         except urllib.error.HTTPError as e:
             self.assertEqual(e.code, 400)
+
+
+# ---------- default card wallet tests ----------
+
+class DefaultWalletTests(unittest.TestCase):
+    def test_load_wallet_with_no_path_still_has_default(self):
+        w = load_wallet(None)
+        self.assertIn("default", w)
+        self.assertEqual(w["default"].kind, "debit")
+
+    def test_load_wallet_with_missing_path_still_has_default(self):
+        w = load_wallet("/nonexistent/path.json")
+        self.assertIn("default", w)
+
+    def test_load_wallet_real_file_still_gets_default_injected(self):
+        # Write a minimal wallet file that doesn't itself mention "default".
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False,
+        ) as tmp:
+            json.dump([{"id": "sapphire", "name": "Chase Sapphire",
+                        "kind": "credit", "apr": "0.2199"}], tmp)
+            wallet_path = tmp.name
+        try:
+            w = load_wallet(wallet_path)
+            self.assertIn("sapphire", w)
+            self.assertIn("default", w)  # auto-injected
+        finally:
+            os.unlink(wallet_path)
+
+
+class DefaultCardPaymentE2ETests(unittest.TestCase):
+    """End-to-end: spin up a server with load_wallet()'s default-only
+    wallet and PUT a payment that references card_id='default'. Proves
+    the frontend's blank → 'default' fallback actually resolves on the
+    server side."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        # Use load_wallet(None) → { "default": <debit card> } only
+        cls.server = ledger_api.build_server(
+            host="127.0.0.1", port=0, wallet=load_wallet(None),
+        )
+        cls.base = f"http://127.0.0.1:{cls.server.server_address[1]}"
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.server.shutdown()
+        cls.thread.join(timeout=2)
+
+    def test_payment_with_default_card_id(self):
+        req = urllib.request.Request(
+            self.base + "/ledger/payment/default",
+            data=json.dumps({
+                "payee": "Coffee",
+                "amount": "4.50",
+                "card_id": "default",
+                "txn_date": "2026-04-09",
+                "expense_account": "Expenses:Food",
+            }).encode(),
+            method="PUT",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req) as resp:
+            data = json.loads(resp.read())
+        self.assertEqual(resp.status, 200)
+        self.assertEqual(data["card"]["id"], "default")
+        self.assertEqual(data["card"]["kind"], "debit")
+        # debit card → Assets:Bank counter account, not Liabilities
+        self.assertEqual(
+            data["journal"][1]["account"],
+            "Assets:Bank:Default",
+        )
+        # temporal block is not applicable for debit cards
+        self.assertFalse(data["temporal"]["applicable"])
 
 
 # ---------- SqliteLedgerStore unit tests ----------
