@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Ledger</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #161922; --line: #262b38;
+    --fg: #e7e9ee; --mute: #8b93a7; --accent: #7aa2f7;
+    --good: #9ece6a; --bad: #f7768e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: var(--bg); color: var(--fg);
+  }
+  header {
+    padding: 16px 24px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; gap: 16px;
+  }
+  header h1 { font-size: 16px; margin: 0; letter-spacing: 0.02em; }
+  header a { color: var(--mute); text-decoration: none; font-size: 12px; }
+  header a:hover { color: var(--accent); }
+  main { display: grid; grid-template-columns: 420px 1fr; gap: 0; min-height: calc(100vh - 49px); }
+  section.form-panel { border-right: 1px solid var(--line); padding: 20px 24px; }
+  section.ledger-panel { padding: 20px 24px; overflow: auto; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 16px; }
+  .tabs button {
+    flex: 1; background: transparent; color: var(--mute);
+    border: 1px solid var(--line); padding: 6px 10px; cursor: pointer;
+    font: inherit; border-radius: 4px;
+  }
+  .tabs button.active { background: var(--panel); color: var(--fg); border-color: var(--accent); }
+  form { display: flex; flex-direction: column; gap: 10px; }
+  label { display: flex; flex-direction: column; gap: 4px; color: var(--mute); font-size: 12px; }
+  input, select {
+    background: var(--panel); color: var(--fg); border: 1px solid var(--line);
+    padding: 8px 10px; border-radius: 4px; font: inherit;
+  }
+  input:focus, select:focus { outline: none; border-color: var(--accent); }
+  button.submit {
+    background: var(--accent); color: #0f1115; border: 0; padding: 10px 14px;
+    border-radius: 4px; font: inherit; font-weight: 600; cursor: pointer; margin-top: 6px;
+  }
+  button.submit:hover { filter: brightness(1.1); }
+  .status { font-size: 12px; margin-top: 8px; min-height: 16px; }
+  .status.ok { color: var(--good); }
+  .status.err { color: var(--bad); }
+  h2 { font-size: 13px; color: var(--mute); text-transform: uppercase;
+       letter-spacing: 0.08em; margin: 0 0 12px; }
+  .kind-group { margin-bottom: 20px; }
+  .kind-group h3 {
+    font-size: 12px; color: var(--accent); margin: 0 0 6px; text-transform: uppercase;
+  }
+  details {
+    border: 1px solid var(--line); border-radius: 4px; padding: 6px 10px;
+    background: var(--panel); margin-bottom: 6px;
+  }
+  details summary {
+    cursor: pointer; display: flex; justify-content: space-between; gap: 12px;
+  }
+  details summary .id { color: var(--mute); font-size: 12px; }
+  details summary .meta { color: var(--fg); }
+  pre {
+    margin: 8px 0 0; padding: 8px; background: #0b0d12;
+    border-radius: 4px; overflow: auto; font-size: 12px;
+  }
+  .empty { color: var(--mute); font-style: italic; }
+  .del {
+    background: transparent; color: var(--bad); border: 1px solid var(--line);
+    padding: 2px 8px; font-size: 11px; border-radius: 3px; cursor: pointer;
+  }
+  .del:hover { border-color: var(--bad); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Ledger</h1>
+  <a href="/docs">/docs</a>
+  <a href="/openapi.json">openapi.json</a>
+</header>
+
+<main>
+  <section class="form-panel">
+    <div class="tabs">
+      <button data-tab="payment" class="active">payment</button>
+      <button data-tab="debt">debt</button>
+      <button data-tab="equity">equity</button>
+      <button data-tab="sub">sub</button>
+    </div>
+
+    <form id="form">
+      <label>id <input name="id" required placeholder="client-supplied id" /></label>
+
+      <!-- payment -->
+      <div data-fields="payment">
+        <label>payee <input name="payee" placeholder="Whole Foods" /></label>
+        <label>amount <input name="amount" placeholder="184.32" /></label>
+        <label>card_id <input name="card_id" placeholder="sapphire" /></label>
+        <label>txn_date <input name="txn_date" type="date" /></label>
+        <label>expense_account <input name="expense_account" placeholder="Expenses:Groceries" /></label>
+      </div>
+
+      <!-- debt -->
+      <div data-fields="debt" hidden>
+        <label>creditor <input name="creditor" placeholder="IRS" /></label>
+        <label>principal <input name="principal" placeholder="1500.00" /></label>
+        <label>due_date <input name="due_date" type="date" /></label>
+        <label>apr <input name="apr" placeholder="0.06" /></label>
+        <label>offset_account <input name="offset_account" placeholder="Expenses:Taxes" /></label>
+      </div>
+
+      <!-- equity -->
+      <div data-fields="equity" hidden>
+        <label>source <input name="source" placeholder="bonus" /></label>
+        <label>amount <input name="amount_eq" placeholder="5000.00" /></label>
+        <label>received_on <input name="received_on" type="date" /></label>
+        <label>target_bucket <input name="target_bucket" placeholder="sp500 (optional)" /></label>
+      </div>
+
+      <!-- sub -->
+      <div data-fields="sub" hidden>
+        <label>service <input name="service" placeholder="netflix" /></label>
+        <label>amount <input name="amount_sub" placeholder="15.99" /></label>
+        <label>frequency
+          <select name="frequency">
+            <option>monthly</option><option>weekly</option><option>yearly</option>
+          </select>
+        </label>
+        <label>next_charge_date <input name="next_charge_date" type="date" /></label>
+        <label>funding_card_id <input name="funding_card_id" placeholder="sapphire" /></label>
+        <label>horizon <input name="horizon" type="number" value="12" /></label>
+      </div>
+
+      <button type="submit" class="submit">PUT</button>
+      <div id="status" class="status"></div>
+    </form>
+  </section>
+
+  <section class="ledger-panel">
+    <h2>Ledger</h2>
+    <div id="ledger"></div>
+  </section>
+</main>
+
+<script>
+const $ = sel => document.querySelector(sel);
+const $$ = sel => [...document.querySelectorAll(sel)];
+
+let currentTab = 'payment';
+
+// tab switch
+$$('.tabs button').forEach(b => b.addEventListener('click', () => {
+  currentTab = b.dataset.tab;
+  $$('.tabs button').forEach(x => x.classList.toggle('active', x === b));
+  $$('[data-fields]').forEach(g => g.hidden = g.dataset.fields !== currentTab);
+}));
+
+// build PUT body from current form
+function buildBody() {
+  const f = $('#form');
+  const v = name => f.elements[name]?.value.trim() || undefined;
+  if (currentTab === 'payment') {
+    return {
+      payee: v('payee'),
+      amount: v('amount'),
+      card_id: v('card_id'),
+      txn_date: v('txn_date'),
+      expense_account: v('expense_account') || 'Expenses:Uncategorized',
+    };
+  }
+  if (currentTab === 'debt') {
+    return {
+      creditor: v('creditor'),
+      principal: v('principal'),
+      due_date: v('due_date'),
+      apr: v('apr') || '0',
+      offset_account: v('offset_account') || 'Expenses:Uncategorized',
+    };
+  }
+  if (currentTab === 'equity') {
+    return {
+      source: v('source'),
+      amount: v('amount_eq'),
+      received_on: v('received_on'),
+      target_bucket: v('target_bucket') || null,
+    };
+  }
+  if (currentTab === 'sub') {
+    return {
+      service: v('service'),
+      amount: v('amount_sub'),
+      frequency: v('frequency'),
+      next_charge_date: v('next_charge_date'),
+      funding_card_id: v('funding_card_id'),
+      horizon: parseInt(v('horizon') || '12', 10),
+    };
+  }
+}
+
+$('#form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const id = $('#form').elements['id'].value.trim();
+  if (!id) return setStatus('id required', false);
+  const body = buildBody();
+  const res = await fetch(`/ledger/${currentTab}/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) return setStatus(`${res.status}: ${data.error || 'error'}`, false);
+  setStatus(`upserted ${currentTab}/${id}`, true);
+  refresh();
+});
+
+function setStatus(msg, ok) {
+  const el = $('#status');
+  el.textContent = msg;
+  el.className = 'status ' + (ok ? 'ok' : 'err');
+}
+
+async function refresh() {
+  const res = await fetch('/ledger');
+  const data = await res.json();
+  const root = $('#ledger');
+  root.innerHTML = '';
+  for (const kind of ['payment', 'debt', 'equity', 'sub']) {
+    const entries = data[kind] || {};
+    const ids = Object.keys(entries);
+    const group = document.createElement('div');
+    group.className = 'kind-group';
+    group.innerHTML = `<h3>${kind} (${ids.length})</h3>`;
+    if (ids.length === 0) {
+      const p = document.createElement('div');
+      p.className = 'empty';
+      p.textContent = '(none)';
+      group.appendChild(p);
+    }
+    for (const id of ids) {
+      const entry = entries[id];
+      const d = document.createElement('details');
+      const meta = summarize(kind, entry);
+      d.innerHTML = `
+        <summary>
+          <span class="id">${kind}/${id}</span>
+          <span class="meta">${meta}</span>
+          <button class="del" data-kind="${kind}" data-id="${id}">delete</button>
+        </summary>
+        <pre>${escapeHtml(JSON.stringify(entry, null, 2))}</pre>
+      `;
+      group.appendChild(d);
+    }
+    root.appendChild(group);
+  }
+  $$('.del').forEach(b => b.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    await fetch(`/ledger/${b.dataset.kind}/${encodeURIComponent(b.dataset.id)}`, { method: 'DELETE' });
+    refresh();
+  }));
+}
+
+function summarize(kind, entry) {
+  if (kind === 'payment') return `$${entry.payment?.amount} → ${entry.payment?.payee}`;
+  if (kind === 'debt') return `$${entry.debt?.principal} → ${entry.debt?.creditor}`;
+  if (kind === 'equity') return `$${entry.equity?.amount} from ${entry.equity?.source}`;
+  if (kind === 'sub') return `$${entry.subscription?.amount}/${entry.subscription?.frequency} ${entry.subscription?.service}`;
+  return '';
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+}
+
+refresh();
+</script>
+</body>
+</html>

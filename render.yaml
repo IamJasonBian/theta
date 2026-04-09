@@ -1,0 +1,28 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+#
+# One-service deploy of the ledger API + frontend + Swagger UI. Connect the
+# repo in the Render dashboard (or via the Render API with a token) and
+# Render will auto-apply this file on every push to the target branch.
+#
+# NOTE: the in-memory LedgerStore does NOT survive restarts or zero-downtime
+# deploys. If you need persistence, add a Render Redis or Postgres resource
+# here and swap LedgerStore for a backed implementation before going live.
+
+services:
+  - type: web
+    name: theta
+    runtime: docker
+    repo: https://github.com/IamJasonBian/theta
+    branch: main
+    dockerfilePath: ./Dockerfile
+    plan: starter          # $7/mo, always-on. Use `free` for idle-sleep tier.
+    region: oregon
+    healthCheckPath: /healthz
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: LEDGER_API_VERBOSE
+        value: "0"
+      # Render injects $PORT automatically; api.py reads it.
+      # Add WALLET_PATH here if/when we ship a bundled wallet file.
+    autoDeploy: true
