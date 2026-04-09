@@ -311,6 +311,48 @@ class ApiE2ETests(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertTrue(out["ok"])
 
+    def test_pwa_manifest_served(self):
+        req = urllib.request.Request(self.base + "/manifest.json")
+        with urllib.request.urlopen(req) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertIn(
+                "manifest+json", resp.headers["Content-Type"],
+            )
+            data = json.loads(resp.read())
+            self.assertEqual(data["short_name"], "theta")
+            self.assertEqual(data["display"], "standalone")
+            self.assertTrue(any(i["src"] == "/icon.svg" for i in data["icons"]))
+
+    def test_icon_svg_served(self):
+        req = urllib.request.Request(self.base + "/icon.svg")
+        with urllib.request.urlopen(req) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertEqual(resp.headers["Content-Type"], "image/svg+xml")
+            body = resp.read().decode()
+            self.assertIn("<svg", body)
+
+    def test_service_worker_served_with_js_content_type(self):
+        req = urllib.request.Request(self.base + "/sw.js")
+        with urllib.request.urlopen(req) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertIn("javascript", resp.headers["Content-Type"])
+            body = resp.read().decode()
+            self.assertIn("CACHE_VERSION", body)
+
+    def test_frontend_has_mobile_meta_tags(self):
+        req = urllib.request.Request(self.base + "/")
+        with urllib.request.urlopen(req) as resp:
+            body = resp.read().decode()
+            self.assertIn('name="viewport"', body)
+            self.assertIn('viewport-fit=cover', body)
+            self.assertIn('rel="manifest"', body)
+            self.assertIn('apple-mobile-web-app-capable', body)
+            self.assertIn('theme-color', body)
+            # responsive breakpoint present
+            self.assertIn('@media (max-width: 768px)', body)
+            # 16px inputs to kill iOS zoom-on-focus
+            self.assertIn('font-size: 16px', body)
+
     def test_bad_json_returns_400(self):
         req = urllib.request.Request(
             self.base + "/ledger/debt/x",

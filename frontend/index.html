@@ -2,22 +2,40 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Ledger</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>theta — ledger</title>
+
+<!-- PWA / iOS home-screen -->
+<link rel="manifest" href="/manifest.json" />
+<link rel="icon" href="/icon.svg" type="image/svg+xml" />
+<link rel="apple-touch-icon" href="/icon.svg" />
+<meta name="theme-color" content="#0f1115" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="theta" />
+<meta name="description" content="theta ledger — record payments, debts, equity, and subscriptions" />
+
 <style>
   :root {
     --bg: #0f1115; --panel: #161922; --line: #262b38;
     --fg: #e7e9ee; --mute: #8b93a7; --accent: #7aa2f7;
     --good: #9ece6a; --bad: #f7768e;
+    /* safe-area insets for iPhone notch / home indicator */
+    --safe-t: env(safe-area-inset-top, 0px);
+    --safe-b: env(safe-area-inset-bottom, 0px);
+    --safe-l: env(safe-area-inset-left, 0px);
+    --safe-r: env(safe-area-inset-right, 0px);
   }
-  * { box-sizing: border-box; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { overscroll-behavior-y: contain; }
   body {
     margin: 0; font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
     background: var(--bg); color: var(--fg);
+    padding: var(--safe-t) var(--safe-r) var(--safe-b) var(--safe-l);
   }
   header {
     padding: 16px 24px; border-bottom: 1px solid var(--line);
-    display: flex; align-items: baseline; gap: 16px;
+    display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
   }
   header h1 { font-size: 16px; margin: 0; letter-spacing: 0.02em; }
   header a { color: var(--mute); text-decoration: none; font-size: 12px; }
@@ -28,20 +46,24 @@
   .tabs { display: flex; gap: 4px; margin-bottom: 16px; }
   .tabs button {
     flex: 1; background: transparent; color: var(--mute);
-    border: 1px solid var(--line); padding: 6px 10px; cursor: pointer;
-    font: inherit; border-radius: 4px;
+    border: 1px solid var(--line); padding: 10px 10px; cursor: pointer;
+    font: inherit; border-radius: 6px; min-height: 44px;
   }
   .tabs button.active { background: var(--panel); color: var(--fg); border-color: var(--accent); }
-  form { display: flex; flex-direction: column; gap: 10px; }
+  form { display: flex; flex-direction: column; gap: 12px; }
   label { display: flex; flex-direction: column; gap: 4px; color: var(--mute); font-size: 12px; }
   input, select {
     background: var(--panel); color: var(--fg); border: 1px solid var(--line);
-    padding: 8px 10px; border-radius: 4px; font: inherit;
+    padding: 10px 12px; border-radius: 6px; font: inherit;
+    /* 16px font-size prevents iOS Safari from zooming in on focus */
+    font-size: 16px; min-height: 44px;
+    -webkit-appearance: none; appearance: none;
   }
   input:focus, select:focus { outline: none; border-color: var(--accent); }
   button.submit {
-    background: var(--accent); color: #0f1115; border: 0; padding: 10px 14px;
-    border-radius: 4px; font: inherit; font-weight: 600; cursor: pointer; margin-top: 6px;
+    background: var(--accent); color: #0f1115; border: 0; padding: 14px 16px;
+    border-radius: 6px; font: inherit; font-weight: 600; font-size: 16px;
+    cursor: pointer; margin-top: 6px; min-height: 48px;
   }
   button.submit:hover { filter: brightness(1.1); }
   .status { font-size: 12px; margin-top: 8px; min-height: 16px; }
@@ -69,9 +91,35 @@
   .empty { color: var(--mute); font-style: italic; }
   .del {
     background: transparent; color: var(--bad); border: 1px solid var(--line);
-    padding: 2px 8px; font-size: 11px; border-radius: 3px; cursor: pointer;
+    padding: 6px 12px; font-size: 12px; border-radius: 4px; cursor: pointer;
+    min-height: 32px;
   }
   .del:hover { border-color: var(--bad); }
+
+  /* ---- mobile ---- */
+  @media (max-width: 768px) {
+    main {
+      grid-template-columns: 1fr;
+      grid-template-rows: auto auto;
+    }
+    section.form-panel {
+      border-right: none;
+      border-bottom: 1px solid var(--line);
+      padding: 16px;
+    }
+    section.ledger-panel { padding: 16px; }
+    header { padding: 14px 16px; gap: 12px; }
+    .tabs { gap: 6px; }
+    .del { min-height: 36px; padding: 8px 14px; }
+    /* larger summary tap target on touch devices */
+    details { padding: 10px 12px; }
+    details summary { padding: 4px 0; }
+  }
+
+  /* standalone PWA mode — slightly tighter header since iOS adds its own */
+  @media (display-mode: standalone) {
+    header { padding-top: calc(14px + var(--safe-t)); }
+  }
 </style>
 </head>
 <body>
@@ -90,47 +138,61 @@
       <button data-tab="sub">sub</button>
     </div>
 
-    <form id="form">
-      <label>id <input name="id" required placeholder="client-supplied id" /></label>
+    <form id="form" autocomplete="off">
+      <label>id <input name="id" required placeholder="client-supplied id"
+             autocapitalize="none" autocorrect="off" spellcheck="false" /></label>
 
       <!-- payment -->
       <div data-fields="payment">
-        <label>payee <input name="payee" placeholder="Whole Foods" /></label>
-        <label>amount <input name="amount" placeholder="184.32" /></label>
-        <label>card_id <input name="card_id" placeholder="sapphire" /></label>
+        <label>payee <input name="payee" placeholder="Whole Foods" autocapitalize="words" /></label>
+        <label>amount <input name="amount" placeholder="184.32"
+               inputmode="decimal" autocomplete="off" /></label>
+        <label>card_id <input name="card_id" placeholder="sapphire"
+               autocapitalize="none" autocorrect="off" spellcheck="false" /></label>
         <label>txn_date <input name="txn_date" type="date" /></label>
-        <label>expense_account <input name="expense_account" placeholder="Expenses:Groceries" /></label>
+        <label>expense_account <input name="expense_account" placeholder="Expenses:Groceries"
+               autocapitalize="none" autocorrect="off" spellcheck="false" /></label>
       </div>
 
       <!-- debt -->
       <div data-fields="debt" hidden>
-        <label>creditor <input name="creditor" placeholder="IRS" /></label>
-        <label>principal <input name="principal" placeholder="1500.00" /></label>
+        <label>creditor <input name="creditor" placeholder="IRS" autocapitalize="words" /></label>
+        <label>principal <input name="principal" placeholder="1500.00"
+               inputmode="decimal" autocomplete="off" /></label>
         <label>due_date <input name="due_date" type="date" /></label>
-        <label>apr <input name="apr" placeholder="0.06" /></label>
-        <label>offset_account <input name="offset_account" placeholder="Expenses:Taxes" /></label>
+        <label>apr <input name="apr" placeholder="0.06"
+               inputmode="decimal" autocomplete="off" /></label>
+        <label>offset_account <input name="offset_account" placeholder="Expenses:Taxes"
+               autocapitalize="none" autocorrect="off" spellcheck="false" /></label>
       </div>
 
       <!-- equity -->
       <div data-fields="equity" hidden>
-        <label>source <input name="source" placeholder="bonus" /></label>
-        <label>amount <input name="amount_eq" placeholder="5000.00" /></label>
+        <label>source <input name="source" placeholder="bonus"
+               autocapitalize="none" /></label>
+        <label>amount <input name="amount_eq" placeholder="5000.00"
+               inputmode="decimal" autocomplete="off" /></label>
         <label>received_on <input name="received_on" type="date" /></label>
-        <label>target_bucket <input name="target_bucket" placeholder="sp500 (optional)" /></label>
+        <label>target_bucket <input name="target_bucket" placeholder="sp500 (optional)"
+               autocapitalize="none" autocorrect="off" spellcheck="false" /></label>
       </div>
 
       <!-- sub -->
       <div data-fields="sub" hidden>
-        <label>service <input name="service" placeholder="netflix" /></label>
-        <label>amount <input name="amount_sub" placeholder="15.99" /></label>
+        <label>service <input name="service" placeholder="netflix"
+               autocapitalize="none" autocorrect="off" spellcheck="false" /></label>
+        <label>amount <input name="amount_sub" placeholder="15.99"
+               inputmode="decimal" autocomplete="off" /></label>
         <label>frequency
           <select name="frequency">
             <option>monthly</option><option>weekly</option><option>yearly</option>
           </select>
         </label>
         <label>next_charge_date <input name="next_charge_date" type="date" /></label>
-        <label>funding_card_id <input name="funding_card_id" placeholder="sapphire" /></label>
-        <label>horizon <input name="horizon" type="number" value="12" /></label>
+        <label>funding_card_id <input name="funding_card_id" placeholder="sapphire"
+               autocapitalize="none" autocorrect="off" spellcheck="false" /></label>
+        <label>horizon <input name="horizon" type="number" value="12"
+               inputmode="numeric" /></label>
       </div>
 
       <button type="submit" class="submit">PUT</button>
@@ -274,6 +336,15 @@ function escapeHtml(s) {
 }
 
 refresh();
+
+// ---- PWA service worker registration ----
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(err => {
+      console.warn('sw registration failed:', err);
+    });
+  });
+}
 </script>
 </body>
 </html>

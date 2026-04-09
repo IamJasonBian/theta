@@ -274,6 +274,22 @@ def make_handler(store: LedgerStore, wallet: dict[str, Card]):
                 return self._send_bytes(
                     200, _load_static("swagger.html"), "text/html; charset=utf-8",
                 )
+            if self.path == "/manifest.json":
+                return self._send_bytes(
+                    200, _load_static("manifest.json"),
+                    "application/manifest+json",
+                )
+            if self.path == "/icon.svg":
+                return self._send_bytes(
+                    200, _load_static("icon.svg"), "image/svg+xml",
+                )
+            if self.path == "/sw.js":
+                # Service worker must be served with a JS content-type and
+                # from the same scope (root) it controls.
+                return self._send_bytes(
+                    200, _load_static("sw.js"),
+                    "application/javascript; charset=utf-8",
+                )
             if self.path == "/openapi.json":
                 return self._send_json(200, build_openapi_spec())
             if self.path == "/healthz":
