@@ -15,6 +15,7 @@ import unittest
 import urllib.request
 from datetime import date
 from decimal import Decimal
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 
 # --- stub airflow before importing operator modules ---
@@ -53,6 +54,7 @@ from debt_operator import AddDebtOperator, Debt  # noqa: E402
 from equity_operator import AddEquityOperator, Equity  # noqa: E402
 from sub_operator import AddSubscriptionOperator, Subscription  # noqa: E402
 from payment_operator import Card  # noqa: E402
+from dq_operator import Category, CompareCategoryOperator  # noqa: E402
 import api as ledger_api  # noqa: E402
 from api import (  # noqa: E402
     InMemoryLedgerStore,
@@ -599,6 +601,238 @@ class ApiSqliteE2ETests(unittest.TestCase):
         self.assertIsNotNone(entry)
         self.assertEqual(entry["debt"]["creditor"], "IRS")
         self.assertEqual(entry["journal"][1]["credit"], "1500.00")
+
+
+# ---------- CompareCategoryOperator (DQ) ----------
+
+def _ledger_fixture() -> dict:
+    """A synthetic ledger with entries in every kind for DQ filtering."""
+    return {
+        "payment": {
+            "p1": {"payment": {"payee": "Whole Foods", "amount": "184.32"}},
+            "p2": {"payment": {"payee": "Coffee", "amount": "4.50"}},
+        },
+        "debt": {
+            "d1": {"debt": {"creditor": "IRS", "principal": "1500.00"}},
+            "d2": {"debt": {"creditor": "CardCo", "principal": "1000.00"}},
+        },
+        "equity": {
+            "e1": {"equity": {"source": "rh", "amount": "90000.00"}},
+            "e2": {"equity": {"source": "rh", "amount": "2000.00"}},
+            "e3": {"equity": {"source": "bonus", "amount": "5000.00"}},
+        },
+        "sub": {
+            "s1": {"subscription": {"service": "netflix", "amount": "15.99"}},
+        },
+    }
+
+
+class CategoryParsingTests(unittest.TestCase):
+    def test_kind_only(self):
+        c = Category.parse("equity")
+        self.assertEqual((c.kind, c.label), ("equity", None))
+
+    def test_kind_and_label(self):
+        c = Category.parse("equity/rh")
+        self.assertEqual((c.kind, c.label), ("equity", "rh"))
+
+    def test_label_with_slashes_preserved(self):
+        # defensive: only split on the FIRST slash
+        c = Category.parse("debt/Citi/Card-1")
+        self.assertEqual((c.kind, c.label), ("debt", "Citi/Card-1"))
+
+
+class DqOperatorUnitTests(unittest.TestCase):
+    def _run(self, category, prod, threshold="0.05", ledger=None) -> dict:
+        op = CompareCategoryOperator(
+            task_id="t",
+            category=category,
+            ledger=ledger if ledger is not None else _ledger_fixture(),
+            prod_value=Decimal(prod),
+            threshold_pct=Decimal(threshold),
+        )
+        return op.execute(context={})
+
+    def test_match_within_threshold(self):
+        # ledger equity/rh = 92000.00; prod 92000.00 → delta 0, match
+        out = self._run("equity/rh", "92000.00")
+        self.assertEqual(out["match_count"], 2)
+        self.assertEqual(sorted(out["matched_ids"]), ["e1", "e2"])
+        self.assertEqual(out["ledger_amount"], "92000.00")
+        self.assertEqual(out["delta"], "0.00")
+        self.assertTrue(out["within_threshold"])
+        self.assertEqual(out["flag"], "match")
+
+    def test_drift_flagged(self):
+        # ledger 92000, prod 96000 → delta 4000 = 4.17% > 5% threshold? No,
+        # 4000/96000 = 0.0417 which is < 0.05 → match.
+        # Use 100000 prod instead → delta 8000/100000 = 0.08, drift.
+        out = self._run("equity/rh", "100000.00")
+        self.assertFalse(out["within_threshold"])
+        self.assertEqual(out["flag"], "drift")
+
+    def test_severe_drift_flagged(self):
+        # ledger 92000, prod 200000 → delta_pct 0.54 → > 2*threshold → severe
+        out = self._run("equity/rh", "200000.00")
+        self.assertEqual(out["flag"], "severe_drift")
+
+    def test_ledger_zero_prod_nonzero_flagged_severe(self):
+        # matching the example from the user: ledger has no equity/rh
+        # entries yet, but prod says we have $92k there.
+        ledger = {"equity": {}}
+        out = self._run("equity/rh", "92040.57", ledger=ledger)
+        self.assertEqual(out["match_count"], 0)
+        self.assertEqual(out["ledger_amount"], "0.00")
+        self.assertEqual(out["delta"], "92040.57")
+        self.assertEqual(out["flag"], "severe_drift")
+        self.assertFalse(out["within_threshold"])
+
+    def test_label_filter_scopes_the_sum(self):
+        # equity total across all sources should be 97000, but equity/rh
+        # only captures the two rh entries = 92000
+        full = self._run("equity", "97000.00")
+        self.assertEqual(full["ledger_amount"], "97000.00")
+        self.assertEqual(full["match_count"], 3)
+
+    def test_unknown_kind_raises(self):
+        with self.assertRaises(ValueError):
+            self._run("ghost/x", "10.00")
+
+    def test_debt_category(self):
+        out = self._run("debt/IRS", "1500.00")
+        self.assertEqual(out["match_count"], 1)
+        self.assertEqual(out["matched_ids"], ["d1"])
+        self.assertEqual(out["flag"], "match")
+
+    def test_sub_category(self):
+        out = self._run("sub/netflix", "15.99")
+        self.assertEqual(out["match_count"], 1)
+        self.assertEqual(out["flag"], "match")
+
+    def test_payment_category(self):
+        out = self._run("payment/Coffee", "4.50")
+        self.assertEqual(out["match_count"], 1)
+        self.assertEqual(out["flag"], "match")
+
+    def test_prod_zero_ledger_zero_is_match(self):
+        ledger = {"equity": {}}
+        out = self._run("equity/rh", "0", ledger=ledger)
+        self.assertEqual(out["flag"], "match")
+        self.assertTrue(out["within_threshold"])
+
+
+# ---------- DQ integration test with stub HTTP server ----------
+
+class DqIntegrationStubTests(unittest.TestCase):
+    """Spins up a stdlib HTTP server that mocks BOTH the allocation-engine
+    snapshot API and the theta ledger API, then runs the real
+    fetch_rh_equity.run() function against the stub. Proves the whole
+    fetch-and-compare flow end-to-end without touching the real network."""
+
+    PROD_EQUITY = Decimal("92040.57")
+
+    class _StubHandler(BaseHTTPRequestHandler):
+        # Filled in by setUpClass so the closure over instance state is
+        # visible inside do_GET.
+        ledger: dict = {}
+        prod_equity: Decimal = Decimal("0")
+
+        def log_message(self, *a, **kw):  # silent
+            pass
+
+        def _send(self, status, payload, content_type="application/json"):
+            body = json.dumps(payload).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):  # noqa: N802
+            path = self.path
+            # ---- allocation-engine routes ----
+            if path == "/api/snapshots":
+                return self._send(200, {
+                    "count": 2,
+                    "snapshots": ["latest", "2026-04-09T22-09-57"],
+                })
+            if path.startswith("/api/snapshots?key="):
+                key = path.split("=", 1)[1]
+                return self._send(200, {
+                    "snapshot_key": key,
+                    "data": {
+                        "timestamp": "2026-04-09T22:09:57.000Z",
+                        "account": {
+                            "equity": float(self.prod_equity),
+                            "cash": -83438.81,
+                            "buying_power": 7200.02,
+                            "portfolio_value": 175479.38,
+                        },
+                        "positions": [],
+                    },
+                })
+            # ---- theta route ----
+            if path == "/ledger":
+                return self._send(200, self.ledger)
+            return self._send(404, {"error": "not found"})
+
+    @classmethod
+    def setUpClass(cls):
+        # Install state on the handler class so requests can see it
+        cls._StubHandler.ledger = _ledger_fixture()
+        cls._StubHandler.prod_equity = cls.PROD_EQUITY
+        # Port 0 → OS picks a free port
+        cls.server = HTTPServer(("127.0.0.1", 0), cls._StubHandler)
+        cls.base = f"http://127.0.0.1:{cls.server.server_address[1]}"
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        # Import the script lazily so it uses the same airflow-stubbed
+        # sys.modules we already set up above.
+        sys.path.insert(
+            0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts"),
+        )
+        import fetch_rh_equity  # noqa: E402
+        cls.fetch = fetch_rh_equity
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.thread.join(timeout=2)
+
+    def test_fetch_prod_equity_picks_real_snapshot(self):
+        eq, key = self.fetch.fetch_prod_equity(self.base)
+        self.assertEqual(Decimal(str(eq)), self.PROD_EQUITY)
+        # The stub returns "latest" first and then a real key; the client
+        # must skip "latest" and use the real one.
+        self.assertEqual(key, "2026-04-09T22-09-57")
+
+    def test_fetch_ledger_returns_stub_data(self):
+        ledger = self.fetch.fetch_ledger(self.base)
+        self.assertIn("e1", ledger["equity"])
+        self.assertIn("e2", ledger["equity"])
+
+    def test_full_run_detects_severe_drift(self):
+        # Ledger equity/rh = 92000, prod = 92040.57 → delta 40.57
+        # → delta_pct ~0.044%  → well within 5% threshold → match
+        result = self.fetch.run(
+            allocation_engine_base=self.base,
+            theta_base=self.base,
+            category="equity/rh",
+            threshold=Decimal("0.05"),
+        )
+        self.assertEqual(result["flag"], "match")
+        self.assertEqual(result["match_count"], 2)
+        self.assertEqual(result["_prod_snapshot_key"], "2026-04-09T22-09-57")
+
+    def test_full_run_flags_drift_with_tight_threshold(self):
+        # Same numbers, but now require 0.001% drift → must flag
+        result = self.fetch.run(
+            allocation_engine_base=self.base,
+            theta_base=self.base,
+            category="equity/rh",
+            threshold=Decimal("0.00001"),
+        )
+        self.assertIn(result["flag"], ("drift", "severe_drift"))
 
 
 if __name__ == "__main__":

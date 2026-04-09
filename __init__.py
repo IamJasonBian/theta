@@ -18,12 +18,15 @@ from .payment_operator import (
 from .debt_operator import AddDebtOperator, Debt
 from .equity_operator import AddEquityOperator, Equity
 from .sub_operator import AddSubscriptionOperator, Subscription
+from .dq_operator import Category, CompareCategoryOperator
 
 __all__ = [
     "AddDebtOperator",
     "AddEquityOperator",
     "AddSubscriptionOperator",
     "Card",
+    "Category",
+    "CompareCategoryOperator",
     "Debt",
     "Equity",
     "JournalLine",
