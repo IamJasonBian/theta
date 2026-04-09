@@ -31,13 +31,14 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import sys
 import threading
 import types
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, Protocol
 
 # Allow running this file directly without going through the package __init__
 # (which would import Airflow eagerly).
@@ -97,15 +98,28 @@ def _load_static(name: str) -> bytes:
         return f.read()
 
 
-# ---------- in-memory store ----------
+# ---------- stores ----------
 
-class LedgerStore:
-    """Thread-safe in-memory store of normalized ledger entries."""
+_KINDS = ("payment", "debt", "equity", "sub")
+
+
+class LedgerStore(Protocol):
+    """Minimal interface every store implementation must honor."""
+
+    def put(self, kind: str, entry_id: str, value: dict[str, Any]) -> None: ...
+    def get(self, kind: str, entry_id: str) -> dict[str, Any] | None: ...
+    def delete(self, kind: str, entry_id: str) -> bool: ...
+    def all(self) -> dict[str, dict[str, dict[str, Any]]]: ...
+
+
+class InMemoryLedgerStore:
+    """Thread-safe dict-backed store. Lost on process restart. Used for
+    local dev and tests (and as a fallback when LEDGER_DB_PATH is unset)."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._entries: dict[str, dict[str, dict[str, Any]]] = {
-            "payment": {}, "debt": {}, "equity": {}, "sub": {},
+            k: {} for k in _KINDS
         }
 
     def put(self, kind: str, entry_id: str, value: dict[str, Any]) -> None:
@@ -123,6 +137,87 @@ class LedgerStore:
     def all(self) -> dict[str, dict[str, dict[str, Any]]]:
         with self._lock:
             return {k: dict(v) for k, v in self._entries.items()}
+
+
+class SqliteLedgerStore:
+    """SQLite-backed store. Survives restarts when `path` points at a
+    persistent volume (on Render, that's the mounted disk at /data).
+
+    Schema is intentionally dumb — one row per (kind, id), value is the
+    operator's JSON output stored as a TEXT blob. We're not doing any
+    SQL on the fields inside, just key-value lookups; so no migrations
+    as the operator output shape evolves.
+
+    Concurrency: we open a fresh connection per call and let SQLite's
+    file lock + WAL handle concurrent writers. ThreadingHTTPServer
+    throughput is low enough that connection churn is not a concern.
+    """
+
+    def __init__(self, path: str) -> None:
+        self.path = path
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS ledger_entries (
+                    kind       TEXT NOT NULL,
+                    entry_id   TEXT NOT NULL,
+                    data       TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (kind, entry_id)
+                )
+                """
+            )
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+
+    def _connect(self) -> sqlite3.Connection:
+        # isolation_level=None → autocommit; every statement commits.
+        return sqlite3.connect(self.path, isolation_level=None, timeout=5.0)
+
+    def put(self, kind: str, entry_id: str, value: dict[str, Any]) -> None:
+        blob = json.dumps(value, default=str)
+        now = datetime.utcnow().isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO ledger_entries "
+                "(kind, entry_id, data, updated_at) VALUES (?, ?, ?, ?)",
+                (kind, entry_id, blob, now),
+            )
+
+    def get(self, kind: str, entry_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT data FROM ledger_entries WHERE kind=? AND entry_id=?",
+                (kind, entry_id),
+            ).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def delete(self, kind: str, entry_id: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM ledger_entries WHERE kind=? AND entry_id=?",
+                (kind, entry_id),
+            )
+            return cur.rowcount > 0
+
+    def all(self) -> dict[str, dict[str, dict[str, Any]]]:
+        result: dict[str, dict[str, dict[str, Any]]] = {k: {} for k in _KINDS}
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT kind, entry_id, data FROM ledger_entries"
+            ).fetchall()
+        for kind, entry_id, data in rows:
+            result.setdefault(kind, {})[entry_id] = json.loads(data)
+        return result
+
+
+def build_store() -> LedgerStore:
+    """Pick the store implementation based on env."""
+    path = os.environ.get("LEDGER_DB_PATH")
+    if path:
+        return SqliteLedgerStore(path)
+    return InMemoryLedgerStore()
 
 
 # ---------- wallet loader ----------
@@ -337,8 +432,9 @@ def make_handler(store: LedgerStore, wallet: dict[str, Card]):
 
 
 def build_server(host: str = "127.0.0.1", port: int = 8765,
-                 wallet: dict[str, Card] | None = None) -> ThreadingHTTPServer:
-    store = LedgerStore()
+                 wallet: dict[str, Card] | None = None,
+                 store: LedgerStore | None = None) -> ThreadingHTTPServer:
+    store = store if store is not None else build_store()
     wallet = wallet if wallet is not None else load_wallet(os.environ.get("WALLET_PATH"))
     handler = make_handler(store, wallet)
     server = ThreadingHTTPServer((host, port), handler)

@@ -47,11 +47,14 @@ _install_airflow_stub()
 # Import operator modules directly (bypass package __init__).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import tempfile  # noqa: E402
+
 from debt_operator import AddDebtOperator, Debt  # noqa: E402
 from equity_operator import AddEquityOperator, Equity  # noqa: E402
 from sub_operator import AddSubscriptionOperator, Subscription  # noqa: E402
 from payment_operator import Card  # noqa: E402
 import api as ledger_api  # noqa: E402
+from api import InMemoryLedgerStore, SqliteLedgerStore, build_store  # noqa: E402
 
 
 # ---------- DebtOperator ----------
@@ -365,6 +368,142 @@ class ApiE2ETests(unittest.TestCase):
             self.fail("expected HTTPError")
         except urllib.error.HTTPError as e:
             self.assertEqual(e.code, 400)
+
+
+# ---------- SqliteLedgerStore unit tests ----------
+
+class SqliteLedgerStoreTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.NamedTemporaryFile(
+            suffix=".sqlite", delete=False,
+        )
+        self.tmp.close()
+        self.path = self.tmp.name
+        self.store = SqliteLedgerStore(self.path)
+
+    def tearDown(self) -> None:
+        os.unlink(self.path)
+        for ext in ("-wal", "-shm"):
+            p = self.path + ext
+            if os.path.exists(p):
+                os.unlink(p)
+
+    def test_put_get_roundtrip(self):
+        self.store.put("debt", "d1", {"debt": {"creditor": "IRS"}})
+        got = self.store.get("debt", "d1")
+        self.assertEqual(got, {"debt": {"creditor": "IRS"}})
+
+    def test_get_missing_returns_none(self):
+        self.assertIsNone(self.store.get("debt", "missing"))
+
+    def test_put_is_upsert(self):
+        self.store.put("equity", "e1", {"amount": "100"})
+        self.store.put("equity", "e1", {"amount": "200"})
+        self.assertEqual(self.store.get("equity", "e1"), {"amount": "200"})
+
+    def test_delete_returns_true_only_if_existed(self):
+        self.store.put("sub", "s1", {"x": 1})
+        self.assertTrue(self.store.delete("sub", "s1"))
+        self.assertFalse(self.store.delete("sub", "s1"))
+        self.assertIsNone(self.store.get("sub", "s1"))
+
+    def test_all_groups_by_kind(self):
+        self.store.put("debt", "d1", {"creditor": "IRS"})
+        self.store.put("debt", "d2", {"creditor": "CardCo"})
+        self.store.put("equity", "e1", {"source": "bonus"})
+        out = self.store.all()
+        self.assertEqual(set(out["debt"].keys()), {"d1", "d2"})
+        self.assertEqual(set(out["equity"].keys()), {"e1"})
+        self.assertEqual(out["sub"], {})
+
+    def test_survives_store_recreation(self):
+        """The whole point of SQLite: close the store, open a new one
+        against the same file, read the data back."""
+        self.store.put("debt", "d1", {"creditor": "IRS", "amount": "1500"})
+        self.store.put("equity", "e1", {"source": "bonus"})
+        # simulate a process restart by creating a fresh store over the
+        # same file path
+        fresh = SqliteLedgerStore(self.path)
+        self.assertEqual(
+            fresh.get("debt", "d1"),
+            {"creditor": "IRS", "amount": "1500"},
+        )
+        self.assertIn("e1", fresh.all()["equity"])
+
+    def test_factory_picks_sqlite_when_env_set(self):
+        os.environ["LEDGER_DB_PATH"] = self.path
+        try:
+            store = build_store()
+            self.assertIsInstance(store, SqliteLedgerStore)
+        finally:
+            del os.environ["LEDGER_DB_PATH"]
+
+    def test_factory_defaults_to_memory(self):
+        os.environ.pop("LEDGER_DB_PATH", None)
+        store = build_store()
+        self.assertIsInstance(store, InMemoryLedgerStore)
+
+
+# ---------- API end-to-end against a SQLite-backed server ----------
+
+class ApiSqliteE2ETests(unittest.TestCase):
+    """Same API flow as ApiE2ETests but with a SQLite-backed store, and
+    with a synthetic 'restart' in the middle that rebuilds the store
+    against the same disk file and confirms entries survive."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.tmp = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
+        cls.tmp.close()
+        cls.path = cls.tmp.name
+        wallet = {"sapphire": _sapphire()}
+        cls.server = ledger_api.build_server(
+            host="127.0.0.1", port=0, wallet=wallet,
+            store=SqliteLedgerStore(cls.path),
+        )
+        cls.base = f"http://127.0.0.1:{cls.server.server_address[1]}"
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.server.shutdown()
+        cls.thread.join(timeout=2)
+        os.unlink(cls.path)
+        for ext in ("-wal", "-shm"):
+            p = cls.path + ext
+            if os.path.exists(p):
+                os.unlink(p)
+
+    def _req(self, method: str, path: str, body: dict | None = None):
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(
+            self.base + path, data=data, method=method,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req) as resp:
+            return resp.status, json.loads(resp.read())
+
+    def test_put_get_persists_across_store_recreation(self):
+        body = {
+            "creditor": "IRS", "principal": "1500.00",
+            "due_date": "2026-04-15", "apr": "0.06",
+            "as_of": "2026-04-09",
+        }
+        code, _ = self._req("PUT", "/ledger/debt/d1", body)
+        self.assertEqual(code, 200)
+
+        # Reach into the running server and replace its store with a fresh
+        # SqliteLedgerStore over the same file path, mimicking a process
+        # restart that re-reads the disk.
+        fresh = SqliteLedgerStore(self.path)
+        # We have to mutate the closure captured by make_handler; easiest
+        # path is to verify via the fresh store directly that the entry
+        # landed on disk, which proves persistence end-to-end.
+        entry = fresh.get("debt", "d1")
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry["debt"]["creditor"], "IRS")
+        self.assertEqual(entry["journal"][1]["credit"], "1500.00")
 
 
 if __name__ == "__main__":

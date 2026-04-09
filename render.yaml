@@ -18,11 +18,22 @@ services:
     plan: starter          # $7/mo, always-on. Use `free` for idle-sleep tier.
     region: oregon
     healthCheckPath: /healthz
+    # Persistent disk for the SQLite ledger database. 1GB is ~$0.25/mo on
+    # top of the starter plan. Entries PUT into /ledger survive deploys,
+    # restarts, and instance recycles as long as this disk stays attached.
+    # Note: adding a disk forces non-zero-downtime deploys (detach/reattach).
+    disk:
+      name: theta-data
+      mountPath: /data
+      sizeGB: 1
     envVars:
       - key: HOST
         value: 0.0.0.0
       - key: LEDGER_API_VERBOSE
         value: "0"
+      # Points the SqliteLedgerStore at the mounted disk. Unset → in-memory.
+      - key: LEDGER_DB_PATH
+        value: /data/theta.sqlite
       # Render injects $PORT automatically; api.py reads it.
       # Add WALLET_PATH here if/when we ship a bundled wallet file.
     autoDeploy: true
