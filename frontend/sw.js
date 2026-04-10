@@ -6,9 +6,18 @@
 //   - For /ledger/* API calls and /openapi.json: network-only (no caching —
 //     we never want a stale PUT result or a cached empty ledger)
 //
-// Bump CACHE_VERSION to force a refresh on every new deploy.
+// !!! CONVENTION !!!
+// Any commit that modifies frontend/index.html, frontend/manifest.json,
+// or frontend/icon.svg MUST bump CACHE_VERSION. Otherwise every phone
+// that installed a previous version of the SW will keep serving stale
+// HTML cache-first, ignoring every Render redeploy. This has bitten us
+// once already.
+//
+// Bump history:
+//   v1 — initial ship (commit d143a10)
+//   v2 — pick up id-handling + default fallback + DQ work (current)
 
-const CACHE_VERSION = 'theta-shell-v1';
+const CACHE_VERSION = 'theta-shell-v2';
 const SHELL_ASSETS = [
   '/',
   '/index.html',

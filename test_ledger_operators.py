@@ -348,6 +348,11 @@ class ApiE2ETests(unittest.TestCase):
             self.assertIn("javascript", resp.headers["Content-Type"])
             body = resp.read().decode()
             self.assertIn("CACHE_VERSION", body)
+            # Regression guard: the version should be explicitly declared
+            # and should not be the original v1 (which no longer matches
+            # the HTML shape shipped in later commits). If this fails,
+            # bump the version constant in frontend/sw.js.
+            self.assertIn("theta-shell-v2", body)
 
     def test_frontend_has_mobile_meta_tags(self):
         req = urllib.request.Request(self.base + "/")
