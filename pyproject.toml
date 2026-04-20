@@ -1,0 +1,25 @@
+[project]
+name = "theta"
+version = "0.1.0"
+description = "Ledger API + operators"
+requires-python = ">=3.11"
+dependencies = [
+    "sqlalchemy[asyncio]>=2.0.30",
+    "asyncpg>=0.29.0",
+    "alembic>=1.13.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "--import-mode=importlib -p _airflow_stub"
+
+[tool.setuptools]
+py-modules = []
