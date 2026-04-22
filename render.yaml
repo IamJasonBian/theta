@@ -36,4 +36,28 @@ services:
         value: /data/theta.sqlite
       # Render injects $PORT automatically; api.py reads it.
       # Add WALLET_PATH here if/when we ship a bundled wallet file.
+      - key: RESEARCH_DIR
+        value: /data/research_out
     autoDeploy: true
+
+  # Weekly research run — regenerates artifacts into /data/research_out
+  # which the web service serves at /research/<path>. Shares the same
+  # disk mount as the web service so cron writes are visible to it.
+  - type: cron
+    name: theta-research-runner
+    runtime: docker
+    repo: https://github.com/IamJasonBian/theta
+    branch: main
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    region: oregon
+    # every Monday at 09:00 UTC
+    schedule: "0 9 * * 1"
+    disk:
+      name: theta-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: RESEARCH_DIR
+        value: /data/research_out
+    dockerCommand: python operators/research_runner.py

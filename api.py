@@ -10,6 +10,8 @@ Endpoints:
   GET  /                       single-page frontend (HTML)
   GET  /docs                   Swagger UI
   GET  /openapi.json           OpenAPI 3.0 spec
+  GET  /research               JSON listing of artifacts in $RESEARCH_DIR
+  GET  /research/<path>        static artifact (svg/png/json/…)
   PUT  /ledger/payment/<id>    body: Payment JSON
   PUT  /ledger/debt/<id>       body: Debt JSON
   PUT  /ledger/equity/<id>     body: Equity JSON
@@ -96,6 +98,63 @@ def _load_static(name: str) -> bytes:
     path = os.path.join(_FRONTEND_DIR, name)
     with open(path, "rb") as f:
         return f.read()
+
+
+# ---------- research artifact serving ----------
+#
+# Files produced by the weekly research cron land in $RESEARCH_DIR. On Render
+# that's the mounted disk (/data/research_out); locally it falls back to
+# operators/research_out/. The /research/<path> route serves anything there
+# as a static artifact — SVG, PNG, JSON, etc.
+
+_DEFAULT_RESEARCH_DIR = "/data/research_out" \
+    if os.path.isdir("/data") else os.path.join(_HERE, "research_out")
+RESEARCH_DIR = os.environ.get("RESEARCH_DIR", _DEFAULT_RESEARCH_DIR)
+
+_CONTENT_TYPES = {
+    ".svg":  "image/svg+xml",
+    ".png":  "image/png",
+    ".jpg":  "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".json": "application/json",
+    ".html": "text/html; charset=utf-8",
+    ".txt":  "text/plain; charset=utf-8",
+    ".css":  "text/css",
+    ".js":   "application/javascript; charset=utf-8",
+}
+
+
+def _research_content_type(path: str) -> str:
+    _, ext = os.path.splitext(path.lower())
+    return _CONTENT_TYPES.get(ext, "application/octet-stream")
+
+
+def _safe_research_path(rel: str) -> str | None:
+    """Resolve rel against RESEARCH_DIR, refusing traversal escapes."""
+    base = os.path.realpath(RESEARCH_DIR)
+    target = os.path.realpath(os.path.join(base, rel))
+    if target != base and not target.startswith(base + os.sep):
+        return None
+    return target
+
+
+def _list_research_dir() -> list[dict[str, Any]]:
+    """Flat listing of research_dir — name, size, mtime."""
+    if not os.path.isdir(RESEARCH_DIR):
+        return []
+    out = []
+    for name in sorted(os.listdir(RESEARCH_DIR)):
+        full = os.path.join(RESEARCH_DIR, name)
+        if not os.path.isfile(full):
+            continue
+        st = os.stat(full)
+        out.append({
+            "name": name,
+            "size": st.st_size,
+            "mtime": datetime.utcfromtimestamp(st.st_mtime).isoformat() + "Z",
+            "url": f"/research/{name}",
+        })
+    return out
 
 
 # ---------- stores ----------
@@ -408,6 +467,30 @@ def make_handler(store: LedgerStore, wallet: dict[str, Card]):
                 return self._send_json(200, build_openapi_spec())
             if self.path == "/healthz":
                 return self._send_json(200, {"ok": True})
+
+            # research artifacts
+            if self.path == "/research" or self.path == "/research/":
+                return self._send_json(200, {
+                    "research_dir": RESEARCH_DIR,
+                    "files": _list_research_dir(),
+                })
+            if self.path.startswith("/research/"):
+                rel = self.path[len("/research/"):].split("?", 1)[0]
+                # strip any query string; drop leading slashes
+                rel = rel.lstrip("/")
+                target = _safe_research_path(rel)
+                if target is None:
+                    return self._send_json(400, {"error": "bad path"})
+                if not os.path.isfile(target):
+                    return self._send_json(404, {"error": "not found"})
+                try:
+                    with open(target, "rb") as f:
+                        blob = f.read()
+                except OSError as e:
+                    return self._send_json(500, {"error": str(e)})
+                return self._send_bytes(
+                    200, blob, _research_content_type(target),
+                )
 
             prefix, kind, entry_id = self._parse_path()
             if prefix != "ledger":

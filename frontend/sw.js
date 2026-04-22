@@ -15,9 +15,10 @@
 //
 // Bump history:
 //   v1 — initial ship (commit d143a10)
-//   v2 — pick up id-handling + default fallback + DQ work (current)
+//   v2 — pick up id-handling + default fallback + DQ work
+//   v3 — add research view (ledger|research toggle, date picker, sections)
 
-const CACHE_VERSION = 'theta-shell-v2';
+const CACHE_VERSION = 'theta-shell-v3';
 const SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -46,8 +47,11 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(req.url);
 
-  // API + OpenAPI + docs → network-only, never cache
+  // API + OpenAPI + docs + research → network-only, never cache.
+  // Research artifacts get rewritten by the weekly cron, so a cached
+  // copy would lie about freshness.
   if (url.pathname.startsWith('/ledger') ||
+      url.pathname.startsWith('/research') ||
       url.pathname === '/openapi.json' ||
       url.pathname === '/docs' ||
       url.pathname === '/healthz') {

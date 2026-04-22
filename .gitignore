@@ -6,3 +6,5 @@ __pycache__/
 .env.*
 wallet.json
 .DS_Store
+*.swp
+research_out/

@@ -96,6 +96,138 @@
   }
   .del:hover { border-color: var(--bad); }
 
+  /* ---- view toggle (ledger | research) ---- */
+  .view-tabs {
+    display: flex; gap: 4px; margin-bottom: 14px;
+    border-bottom: 1px solid var(--line); padding-bottom: 0;
+  }
+  .view-tabs button {
+    background: transparent; color: var(--mute);
+    border: none; border-bottom: 2px solid transparent;
+    padding: 8px 14px 10px; cursor: pointer;
+    font: inherit; font-size: 12px; letter-spacing: 0.06em;
+    text-transform: uppercase; min-height: 36px;
+  }
+  .view-tabs button.active {
+    color: var(--fg); border-bottom-color: var(--accent);
+  }
+  .view-tabs .refresh {
+    margin-left: auto; color: var(--mute); font-size: 11px;
+    border-bottom-color: transparent;
+  }
+  .view-tabs .refresh:hover { color: var(--accent); }
+
+  /* ---- research gallery ---- */
+  .research-meta {
+    color: var(--mute); font-size: 12px; margin-bottom: 14px;
+    display: flex; gap: 14px; flex-wrap: wrap;
+  }
+  .research-meta .pill {
+    background: var(--panel); border: 1px solid var(--line);
+    padding: 3px 8px; border-radius: 10px;
+  }
+  .research-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 12px;
+  }
+  .artifact {
+    border: 1px solid var(--line); background: var(--panel);
+    border-radius: 6px; padding: 10px;
+    display: flex; flex-direction: column; gap: 6px;
+    text-decoration: none; color: var(--fg);
+  }
+  .artifact:hover { border-color: var(--accent); }
+  .artifact .thumb {
+    height: 120px; background: #0b0d12; border-radius: 4px;
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden; position: relative;
+  }
+  .artifact .thumb img {
+    max-width: 100%; max-height: 100%;
+    display: block;
+  }
+  .artifact .thumb .stub {
+    color: var(--mute); font-size: 10px; text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .artifact .thumb .kind-badge {
+    position: absolute; top: 6px; right: 6px;
+    color: var(--mute); font-size: 10px; letter-spacing: 0.06em;
+    background: rgba(15, 17, 21, 0.65); padding: 2px 6px; border-radius: 3px;
+  }
+  .artifact .name {
+    font-size: 12px; color: var(--fg); word-break: break-all;
+  }
+  .artifact .meta {
+    font-size: 11px; color: var(--mute);
+    display: flex; justify-content: space-between; gap: 8px;
+  }
+  .research-empty {
+    color: var(--mute); font-style: italic; padding: 24px 0;
+  }
+
+  /* ---- run selector (horizontal date picker) ---- */
+  .run-selector {
+    display: flex; gap: 6px; margin-bottom: 16px;
+    overflow-x: auto; scrollbar-width: thin;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--line);
+  }
+  .run-pill {
+    flex: 0 0 auto;
+    background: transparent; color: var(--mute);
+    border: 1px solid var(--line); border-radius: 6px;
+    padding: 8px 12px; cursor: pointer; font: inherit; font-size: 12px;
+    display: flex; flex-direction: column; gap: 2px; align-items: flex-start;
+    min-width: 96px; min-height: 44px;
+    text-align: left;
+  }
+  .run-pill:hover { border-color: var(--accent); }
+  .run-pill.active {
+    background: var(--panel); color: var(--fg); border-color: var(--accent);
+  }
+  .run-pill .run-date {
+    font-size: 12px; color: inherit; font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+  .run-pill .run-status {
+    font-size: 9px; color: var(--mute);
+    text-transform: uppercase; letter-spacing: 0.08em;
+  }
+  .run-pill.active .run-status.upcoming { color: var(--accent); }
+  .run-pill.active .run-status.ran      { color: var(--good); }
+  .run-pill.active .run-status.missed   { color: var(--bad); }
+
+  .artifact.placeholder { opacity: 0.85; }
+  .artifact.placeholder .thumb {
+    background: repeating-linear-gradient(
+      135deg, #0b0d12 0 8px, #10131a 8px 16px
+    );
+  }
+  .artifact.placeholder .thumb .stub {
+    color: var(--mute); font-size: 10px;
+  }
+
+  /* ---- research sub-sections (per date) ---- */
+  .research-section { margin-bottom: 22px; }
+  .section-header {
+    display: flex; align-items: baseline; gap: 10px;
+    margin: 0 0 4px;
+  }
+  .section-title {
+    font-size: 12px; color: var(--accent);
+    text-transform: uppercase; letter-spacing: 0.08em;
+    font-weight: 600;
+  }
+  .section-count {
+    font-size: 11px; color: var(--mute);
+  }
+  .section-hint {
+    font-size: 11px; color: var(--mute);
+    margin: 0 0 10px;
+  }
+
   /* ---- mobile ---- */
   @media (max-width: 768px) {
     main {
@@ -201,8 +333,21 @@
   </section>
 
   <section class="ledger-panel">
-    <h2>Ledger</h2>
-    <div id="ledger"></div>
+    <div class="view-tabs">
+      <button data-view="ledger" class="active">ledger</button>
+      <button data-view="research">research</button>
+      <button class="refresh" id="view-refresh" title="re-fetch current view">refresh</button>
+    </div>
+
+    <div id="ledger-view">
+      <div id="ledger"></div>
+    </div>
+
+    <div id="research-view" hidden>
+      <div id="research-meta" class="research-meta"></div>
+      <div id="run-selector" class="run-selector"></div>
+      <div id="run-artifacts"></div>
+    </div>
   </section>
 </main>
 
@@ -415,6 +560,210 @@ function summarize(kind, entry) {
 
 function escapeHtml(s) {
   return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+}
+
+// ---- view toggle (ledger | research) ----
+
+let currentView = 'ledger';
+
+$$('.view-tabs button[data-view]').forEach(b => b.addEventListener('click', () => {
+  currentView = b.dataset.view;
+  $$('.view-tabs button[data-view]').forEach(x =>
+    x.classList.toggle('active', x === b));
+  $('#ledger-view').hidden  = currentView !== 'ledger';
+  $('#research-view').hidden = currentView !== 'research';
+  if (currentView === 'research') renderResearchRuns();
+}));
+
+$('#view-refresh').addEventListener('click', () => {
+  if (currentView === 'research') renderResearchRuns();
+  else refresh();
+});
+
+// ---- research artifact gallery ----
+
+function fmtAgo(iso) {
+  if (!iso) return '';
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return iso;
+  const sec = Math.round((Date.now() - then) / 1000);
+  const abs = Math.abs(sec);
+  const dir = sec >= 0 ? 'ago' : 'from now';
+  if (abs < 60) return `${abs}s ${dir}`;
+  if (abs < 3600) return `${Math.round(abs / 60)}m ${dir}`;
+  if (abs < 86400) return `${Math.round(abs / 3600)}h ${dir}`;
+  return `${Math.round(abs / 86400)}d ${dir}`;
+}
+
+// Each research run is partitioned into sub-research sections. Sections
+// are ordered top→bottom in the grouped view below the date picker.
+const RESEARCH_SECTIONS = [
+  {
+    slug: 'health',
+    title: 'Financial health',
+    hint:  'snapshots of where the ledger stands right now',
+    components: [
+      { slug: 'fscore',        blurb: 'Piotroski-style 0..9 score' },
+      { slug: 'budget_sankey', blurb: 'sources → pool → allocations' },
+    ],
+  },
+  {
+    slug: 'decisions',
+    title: 'Decision analysis',
+    hint:  'profitability of candidate moves over a 90d horizon',
+    components: [
+      { slug: 'contribution_profit', blurb: 'profit by decision, ranked' },
+      { slug: 'cum_profit',          blurb: 'cumulative profit per decision' },
+    ],
+  },
+  {
+    slug: 'debt',
+    title: 'Debt analysis',
+    hint:  'how each liability trends under different pay-down scenarios',
+    components: [
+      { slug: 'debt_payoff', blurb: 'payoff trajectories per scenario' },
+    ],
+  },
+  {
+    slug: 'markets',
+    title: 'Market analysis',
+    hint:  'exogenous views — deployment uncertainty, bucket paths',
+    components: [
+      { slug: 'market_bands', blurb: 'sp500 vs crypto ±σ bands' },
+    ],
+  },
+];
+
+// Flattened count for header pill.
+const RESEARCH_COMPONENT_COUNT = RESEARCH_SECTIONS.reduce(
+  (n, s) => n + s.components.length, 0
+);
+
+// Weekly schedule anchor — Mondays 09:00 UTC. Generate the most-recent
+// N past Mondays plus the next upcoming one. All dates are UTC so the
+// tiles line up with the Render cron, which runs in UTC.
+function mostRecentMondayUTC(from = new Date()) {
+  const d = new Date(Date.UTC(
+    from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate(), 9, 0, 0, 0
+  ));
+  // 0 = Sun, 1 = Mon, ... 6 = Sat
+  const dow = d.getUTCDay();
+  const back = (dow + 6) % 7;  // days since last Monday
+  d.setUTCDate(d.getUTCDate() - back);
+  return d;
+}
+
+function researchRunDates({ past = 4, future = 1 } = {}) {
+  const anchor = mostRecentMondayUTC();
+  const out = [];
+  for (let i = future; i > 0; i--) {
+    const d = new Date(anchor);
+    d.setUTCDate(d.getUTCDate() + 7 * i);
+    out.push(d);
+  }
+  for (let i = 0; i <= past; i++) {
+    const d = new Date(anchor);
+    d.setUTCDate(d.getUTCDate() - 7 * i);
+    out.push(d);
+  }
+  return out;
+}
+
+function runStatus(date) {
+  const now = Date.now();
+  const t = date.getTime();
+  if (t > now) return 'upcoming';
+  // anything in the last 7 days after the scheduled time is the "latest run"
+  if (now - t < 7 * 24 * 3600 * 1000) return 'ran';
+  return 'ran';  // historical — treat all past runs as "ran" in this stub view
+}
+
+function fmtRunDate(d) {
+  // e.g. "Mon Apr 20 2026"
+  const opts = { weekday: 'short', month: 'short', day: 'numeric',
+                 year: 'numeric', timeZone: 'UTC' };
+  return d.toLocaleDateString('en-US', opts);
+}
+
+// selected run date (ISO "YYYY-MM-DD"). Defaults to the most-recent
+// past run — the one the user is most likely to want to look at.
+let currentRunIso = null;
+
+function renderRunSelector() {
+  const selector = $('#run-selector');
+  selector.innerHTML = '';
+
+  const dates = researchRunDates();
+  // Most-recent-past run becomes the default selection if nothing is picked.
+  const now = Date.now();
+  if (!currentRunIso) {
+    const past = dates.filter(d => d.getTime() <= now);
+    const defaultD = past.length ? past[0] : dates[0];
+    currentRunIso = defaultD.toISOString().slice(0, 10);
+  }
+
+  for (const d of dates) {
+    const iso = d.toISOString().slice(0, 10);
+    const status = runStatus(d);
+    const btn = document.createElement('button');
+    btn.className = 'run-pill' + (iso === currentRunIso ? ' active' : '');
+    btn.dataset.iso = iso;
+    btn.innerHTML = `
+      <span class="run-date">${fmtRunDate(d)}</span>
+      <span class="run-status ${status}">${status} · ${fmtAgo(d.toISOString())}</span>`;
+    btn.addEventListener('click', () => {
+      currentRunIso = iso;
+      $$('.run-pill').forEach(p =>
+        p.classList.toggle('active', p.dataset.iso === iso));
+      renderRunArtifacts();
+    });
+    selector.appendChild(btn);
+  }
+}
+
+function renderRunArtifacts() {
+  const root = $('#run-artifacts');
+  root.innerHTML = '';
+  for (const section of RESEARCH_SECTIONS) {
+    const sec = document.createElement('section');
+    sec.className = 'research-section';
+    sec.innerHTML = `
+      <div class="section-header">
+        <span class="section-title">${section.title}</span>
+        <span class="section-count">${section.components.length}</span>
+      </div>
+      <div class="section-hint">${section.hint}</div>
+      <div class="research-grid"></div>`;
+
+    const grid = sec.querySelector('.research-grid');
+    for (const c of section.components) {
+      const card = document.createElement('div');
+      card.className = 'artifact placeholder';
+      card.innerHTML = `
+        <div class="thumb">
+          <div class="stub">${c.slug}</div>
+          <span class="kind-badge">${currentRunIso}</span>
+        </div>
+        <div class="name">${c.slug}</div>
+        <div class="meta">
+          <span>${c.blurb}</span>
+          <span>${section.slug}</span>
+        </div>`;
+      grid.appendChild(card);
+    }
+    root.appendChild(sec);
+  }
+}
+
+function renderResearchRuns() {
+  const meta = $('#research-meta');
+  meta.innerHTML = [
+    `<span class="pill">schedule: Mon 09:00 UTC</span>`,
+    `<span class="pill">${RESEARCH_SECTIONS.length} sections · ${RESEARCH_COMPONENT_COUNT} components / run</span>`,
+    `<span class="pill">placeholders · artifacts wiring pending</span>`,
+  ].join('');
+  renderRunSelector();
+  renderRunArtifacts();
 }
 
 prefillId();
