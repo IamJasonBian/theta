@@ -278,6 +278,7 @@ def _run_payment(entry_id: str, body: dict, wallet: dict[str, Card]) -> dict:
         card_id=body["card_id"],
         txn_date=date.fromisoformat(body["txn_date"]),
         memo=body.get("memo", ""),
+        rail=body.get("rail") or None,
     )
     op = NormalizePaymentOperator(
         task_id=f"api_payment_{entry_id}",

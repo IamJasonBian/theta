@@ -29,6 +29,25 @@ from airflow.models import BaseOperator
 from airflow.utils.context import Context
 
 
+# ---------- payment rails ----------
+#
+# A "rail" is how the money actually moves. Each rail has a fixed leadtime
+# (calendar days from txn_date to settlement_date) we use to compute when
+# the funds will actually clear. Leadtimes are hardcoded here rather than
+# read from config: they're properties of the rail itself, not the user.
+#
+# Values are conservative defaults sourced from each network's published
+# behavior for the standard (non-instant, no-fee) path:
+#   - zelle: real-time between enrolled users at supported banks
+#   - venmo: standard 1-3 business day ACH withdrawal; we use 1
+#   - bilt:  rent rail processes via ACH, typically 3 business days
+PAYMENT_RAILS: dict[str, dict[str, Any]] = {
+    "zelle": {"name": "Zelle", "leadtime_days": 0},
+    "venmo": {"name": "Venmo", "leadtime_days": 1},
+    "bilt":  {"name": "Bilt",  "leadtime_days": 3},
+}
+
+
 # ---------- domain types ----------
 
 @dataclass(frozen=True)
@@ -53,6 +72,9 @@ class Payment:
     card_id: str
     txn_date: date
     memo: str = ""
+    # how the money moves — one of PAYMENT_RAILS keys, or None when the
+    # payment clears directly on the card with no separate transfer rail.
+    rail: str | None = None
 
 
 @dataclass(frozen=True)
@@ -170,6 +192,35 @@ class NormalizePaymentOperator(BaseOperator):
             "pay_in_full_by_to_avoid_interest": next_due.isoformat(),
         }
 
+    # --- rail ---
+
+    def _rail_report(self) -> dict[str, Any]:
+        """Resolve the payment's rail to a leadtime and settlement date.
+
+        With no rail the payment is treated as clearing on txn_date itself
+        (leadtime 0) — the same as an instant rail, just unlabeled."""
+        rail = self.payment.rail
+        if rail is None:
+            return {"applicable": False, "reason": "no rail specified"}
+
+        spec = PAYMENT_RAILS.get(rail)
+        if spec is None:
+            raise ValueError(
+                f"unknown payment rail {rail!r}; "
+                f"expected one of {sorted(PAYMENT_RAILS)}"
+            )
+
+        leadtime = int(spec["leadtime_days"])
+        settlement = self.payment.txn_date + timedelta(days=leadtime)
+        return {
+            "applicable": True,
+            "rail": rail,
+            "rail_name": spec["name"],
+            "leadtime_days": leadtime,
+            "txn_date": self.payment.txn_date.isoformat(),
+            "settlement_date": settlement.isoformat(),
+        }
+
     # --- journal ---
 
     def _journal(self, card: Card) -> list[JournalLine]:
@@ -192,6 +243,7 @@ class NormalizePaymentOperator(BaseOperator):
             )
         card = self.cards[self.payment.card_id]
 
+        rail = self._rail_report()  # raises on an unknown rail
         journal = self._journal(card)
         total_dr = sum((l.debit for l in journal), Decimal("0.00"))
         total_cr = sum((l.credit for l in journal), Decimal("0.00"))
@@ -222,6 +274,7 @@ class NormalizePaymentOperator(BaseOperator):
                  "credit": str(l.credit)}
                 for l in journal
             ],
+            "rail": rail,
             "temporal": self._temporal_report(card),
         }
 

@@ -50,6 +50,7 @@ def _install_airflow_stub() -> None:
 _install_airflow_stub()
 
 from payment_operator import (  # noqa: E402
+    PAYMENT_RAILS,
     Card,
     NormalizePaymentOperator,
     Payment,
@@ -218,6 +219,82 @@ class ProjectedInterestTests(unittest.TestCase):
             out["temporal"]["projected_interest_on_this_charge_if_unpaid_by_due"],
             str(expected),
         )
+
+
+class RailTests(unittest.TestCase):
+    def test_no_rail_block_not_applicable(self):
+        out = _run(
+            Payment(
+                payee="W", amount=Decimal("10.00"),
+                card_id="checking", txn_date=date(2026, 4, 9),
+            ),
+            {"checking": _checking()},
+        )
+        self.assertFalse(out["rail"]["applicable"])
+
+    def test_zelle_settles_same_day(self):
+        out = _run(
+            Payment(
+                payee="W", amount=Decimal("10.00"),
+                card_id="checking", txn_date=date(2026, 4, 9),
+                rail="zelle",
+            ),
+            {"checking": _checking()},
+        )
+        r = out["rail"]
+        self.assertTrue(r["applicable"])
+        self.assertEqual(r["rail_name"], "Zelle")
+        self.assertEqual(r["leadtime_days"], 0)
+        self.assertEqual(r["settlement_date"], "2026-04-09")
+
+    def test_venmo_settles_one_day_out(self):
+        out = _run(
+            Payment(
+                payee="W", amount=Decimal("10.00"),
+                card_id="checking", txn_date=date(2026, 4, 9),
+                rail="venmo",
+            ),
+            {"checking": _checking()},
+        )
+        self.assertEqual(out["rail"]["settlement_date"], "2026-04-10")
+
+    def test_bilt_settles_three_days_out(self):
+        out = _run(
+            Payment(
+                payee="Landlord LLC", amount=Decimal("2200.00"),
+                card_id="checking", txn_date=date(2026, 4, 9),
+                rail="bilt",
+            ),
+            {"checking": _checking()},
+        )
+        self.assertEqual(out["rail"]["settlement_date"], "2026-04-12")
+
+    def test_unknown_rail_raises(self):
+        with self.assertRaises(ValueError):
+            _run(
+                Payment(
+                    payee="W", amount=Decimal("10.00"),
+                    card_id="checking", txn_date=date(2026, 4, 9),
+                    rail="cashapp",
+                ),
+                {"checking": _checking()},
+            )
+
+    def test_rail_echoed_in_payment_block(self):
+        out = _run(
+            Payment(
+                payee="W", amount=Decimal("10.00"),
+                card_id="checking", txn_date=date(2026, 4, 9),
+                rail="venmo",
+            ),
+            {"checking": _checking()},
+        )
+        self.assertEqual(out["payment"]["rail"], "venmo")
+
+    def test_all_rails_registered_with_nonnegative_leadtime(self):
+        self.assertEqual(set(PAYMENT_RAILS), {"zelle", "venmo", "bilt"})
+        for spec in PAYMENT_RAILS.values():
+            self.assertGreaterEqual(spec["leadtime_days"], 0)
 
 
 if __name__ == "__main__":

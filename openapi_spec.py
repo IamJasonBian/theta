@@ -40,6 +40,12 @@ SCHEMAS: dict[str, Any] = {
             "card_id": {"type": "string", "example": "sapphire"},
             "txn_date": _iso_date("transaction date"),
             "memo": {"type": "string", "default": ""},
+            "rail": {"type": "string", "nullable": True,
+                     "enum": ["zelle", "venmo", "bilt"],
+                     "description": "payment rail; sets the leadtime used to "
+                                    "compute settlement_date. Omit for a "
+                                    "payment that clears directly on the card.",
+                     "example": "zelle"},
             "expense_account": {"type": "string",
                                 "default": "Expenses:Uncategorized"},
         },
