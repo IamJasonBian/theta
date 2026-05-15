@@ -9,7 +9,7 @@ Theta uses Airflow-style operators that wrap generic ledger workflows into compo
 Each operator owns one domain action, validates its inputs at the boundary,
 and returns a JSON-serializable dict. The same operators back both an Airflow
 DAG (`BaseOperator`) and the standalone API (where it's stubbed
-at runtime) so you can develop locally without installing Airflow.
+at runtime) so you can develop locally (and mock a new processor) without installing Airflow.
 
 ## Layout
 
@@ -204,3 +204,7 @@ Redis/Postgres-backed equivalent before you ship.
 6. Add a request schema + path entry in `openapi_spec.py`.
 7. Add a tab + form block in `frontend/index.html` and a `buildBody()` case.
 8. Write tests in `test_ledger_operators.py`.
+
+## Out of Scope (for now)
+
+* Payment system client (venmo, cashapp etc) mocks
