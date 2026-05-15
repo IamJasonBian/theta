@@ -150,6 +150,14 @@
         <label>card_id <input name="card_id" placeholder="blank → default card"
                autocapitalize="none" autocorrect="off" spellcheck="false" /></label>
         <label>txn_date <input name="txn_date" type="date" /></label>
+        <label>rail
+          <select name="rail">
+            <option value="">— none (clears on card) —</option>
+            <option value="zelle">Zelle (0d leadtime)</option>
+            <option value="venmo">Venmo (1d leadtime)</option>
+            <option value="bilt">Bilt (3d leadtime)</option>
+          </select>
+        </label>
         <label>expense_account <input name="expense_account" placeholder="Expenses:Groceries"
                autocapitalize="none" autocorrect="off" spellcheck="false" /></label>
       </div>
@@ -263,6 +271,9 @@ function buildBody() {
       // the user to configure a wallet first.
       card_id: v('card_id') || 'default',
       txn_date: v('txn_date'),
+      // Blank rail → null: the payment clears directly on the card with
+      // no separate transfer leadtime.
+      rail: v('rail') || null,
       expense_account: v('expense_account') || 'Expenses:Uncategorized',
     };
   }
@@ -346,7 +357,7 @@ function resetFieldsForTab(tab) {
   const f = $('#form');
   const clear = (name) => { if (f.elements[name]) f.elements[name].value = ''; };
   if (tab === 'payment') {
-    ['payee','amount','card_id','txn_date','expense_account'].forEach(clear);
+    ['payee','amount','card_id','txn_date','rail','expense_account'].forEach(clear);
   } else if (tab === 'debt') {
     ['creditor','principal','due_date','apr','offset_account'].forEach(clear);
   } else if (tab === 'equity') {
@@ -406,7 +417,14 @@ async function refresh() {
 }
 
 function summarize(kind, entry) {
-  if (kind === 'payment') return `$${entry.payment?.amount} → ${entry.payment?.payee}`;
+  if (kind === 'payment') {
+    let s = `$${entry.payment?.amount} → ${entry.payment?.payee}`;
+    const rail = entry.rail;
+    if (rail?.applicable) {
+      s += ` · ${rail.rail_name} settles ${rail.settlement_date}`;
+    }
+    return s;
+  }
   if (kind === 'debt') return `$${entry.debt?.principal} → ${entry.debt?.creditor}`;
   if (kind === 'equity') return `$${entry.equity?.amount} from ${entry.equity?.source}`;
   if (kind === 'sub') return `$${entry.subscription?.amount}/${entry.subscription?.frequency} ${entry.subscription?.service}`;
