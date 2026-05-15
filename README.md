@@ -1,12 +1,14 @@
+# Why
+
+Currently, the lowest latency setup for autopay and general transaction systems is via a single checking account (managing all inflows and outflows). Multiple checking accounts generally reduces the overall liquidity pool due to leadtimes in cross account transfers, increasing the likelihood of fees. There are situations however where it is advantageous to split dry powder across multiple systems.
+
 # operators/
 
-Airflow-style operators that wrap ledger actions as composable tasks, plus a
-zero-dependency HTTP API (with Swagger UI) and a single-file frontend for
-entering transactions.
+Theta uses Airflow-style operators that wrap generic ledger workflows into composable tasks. The goal is to model payment task schedulers locally and manage autopay leadtimes across multiple accounts. It uses a HTTP API and a single-file frontend for entering transactions.
 
 Each operator owns one domain action, validates its inputs at the boundary,
 and returns a JSON-serializable dict. The same operators back both an Airflow
-DAG (where `BaseOperator` is real) and the standalone API (where it's stubbed
+DAG (`BaseOperator`) and the standalone API (where it's stubbed
 at runtime) so you can develop locally without installing Airflow.
 
 ## Layout
@@ -31,7 +33,7 @@ operators/
 ## Operators
 
 ### `NormalizePaymentOperator` — one-off payment
-Double-entry journal + card enrichment + **temporal dependency report** against
+Double-entry journal + card features + **temporal** against
 the source card's billing cycle (statement close, grace period, daily periodic
 rate, projected interest if unpaid by due).
 
@@ -62,7 +64,7 @@ month rollover for short months, and rolls Feb 29 → Feb 28 in non-leap years.
 | Journal | Dr `Expenses:Subscriptions:<service>` | Cr card side (credit or debit) |
 |---|---|---|
 
-### Conventions
+### Entities and Design Conventions
 - Dataclass inputs, typed kwargs, `execute(context) -> dict`.
 - **Hard failure at the boundary** — unknown `card_id` / unbalanced journal → `ValueError`.
 - **Soft failure in output** — e.g. debit cards get `temporal.applicable=false` instead of an exception.
@@ -124,7 +126,7 @@ python3 operators/api.py                 # 127.0.0.1:8765
 python3 operators/api.py 0.0.0.0 8765    # bind all interfaces
 ```
 
-### Inject a wallet
+### Injecting a wallet
 Payment and sub operators need to resolve `card_id` against a wallet. Point
 at a JSON file via `WALLET_PATH`:
 ```bash
