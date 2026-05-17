@@ -136,6 +136,7 @@
       <button data-tab="debt">debt</button>
       <button data-tab="equity">equity</button>
       <button data-tab="sub">sub</button>
+      <button data-tab="credit_score">credit</button>
     </div>
 
     <form id="form" autocomplete="off">
@@ -203,6 +204,20 @@
                inputmode="numeric" /></label>
       </div>
 
+      <!-- credit_score -->
+      <div data-fields="credit_score" hidden>
+        <label>bureau
+          <select name="bureau">
+            <option>experian</option><option>equifax</option><option>transunion</option>
+          </select>
+        </label>
+        <label>score <input name="score" placeholder="784" type="number"
+               min="300" max="850" inputmode="numeric" /></label>
+        <label>model <input name="model" placeholder="vantage_4.0"
+               autocapitalize="none" autocorrect="off" spellcheck="false" /></label>
+        <label>as_of <input name="as_of" type="date" /></label>
+      </div>
+
       <button type="submit" class="submit">PUT</button>
       <div id="status" class="status"></div>
     </form>
@@ -222,7 +237,7 @@ let currentTab = 'payment';
 // Mirror of /ledger fetched by refresh(). Used for the "id already exists"
 // check before a PUT so we don't silently clobber an entry the user can
 // actually see on the right-hand panel.
-let latestLedger = { payment: {}, debt: {}, equity: {}, sub: {} };
+let latestLedger = { payment: {}, debt: {}, equity: {}, sub: {}, credit_score: {} };
 
 // Short, unique-enough ids so every fresh form load gets its own slot.
 // Format: "<kind>-<date>-<rand>", e.g. "debt-20260409-k4p2m".
@@ -306,6 +321,16 @@ function buildBody() {
       horizon: parseInt(v('horizon') || '12', 10),
     };
   }
+  if (currentTab === 'credit_score') {
+    return {
+      bureau: v('bureau'),
+      // Send score as a number; the API does int() coercion either way,
+      // but a JSON number keeps the OpenAPI schema honest.
+      score: v('score') !== undefined ? parseInt(v('score'), 10) : undefined,
+      model: v('model'),
+      as_of: v('as_of'),
+    };
+  }
 }
 
 $('#form').addEventListener('submit', async (e) => {
@@ -366,6 +391,10 @@ function resetFieldsForTab(tab) {
     ['service','amount_sub','next_charge_date','funding_card_id'].forEach(clear);
     // leave frequency + horizon at whatever the user picked — likely
     // reused across multiple subs being entered in a row
+  } else if (tab === 'credit_score') {
+    ['score','model','as_of'].forEach(clear);
+    // leave bureau at whatever the user picked — they likely track the
+    // same bureau month over month
   }
 }
 
@@ -381,7 +410,7 @@ async function refresh() {
   latestLedger = data;  // cache for collision-check in submit handler
   const root = $('#ledger');
   root.innerHTML = '';
-  for (const kind of ['payment', 'debt', 'equity', 'sub']) {
+  for (const kind of ['payment', 'debt', 'equity', 'sub', 'credit_score']) {
     const entries = data[kind] || {};
     const ids = Object.keys(entries);
     const group = document.createElement('div');
@@ -428,6 +457,10 @@ function summarize(kind, entry) {
   if (kind === 'debt') return `$${entry.debt?.principal} → ${entry.debt?.creditor}`;
   if (kind === 'equity') return `$${entry.equity?.amount} from ${entry.equity?.source}`;
   if (kind === 'sub') return `$${entry.subscription?.amount}/${entry.subscription?.frequency} ${entry.subscription?.service}`;
+  if (kind === 'credit_score') {
+    const c = entry.credit_score || {};
+    return `${c.score} ${c.band || ''} (${c.bureau} ${c.model})`;
+  }
   return '';
 }
 
