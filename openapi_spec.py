@@ -92,6 +92,23 @@ SCHEMAS: dict[str, Any] = {
             "memo": {"type": "string", "default": ""},
         },
     },
+    "CreditScoreRequest": {
+        "type": "object",
+        "required": ["bureau", "score", "model", "as_of"],
+        "properties": {
+            "bureau": {"type": "string",
+                       "enum": ["experian", "equifax", "transunion"],
+                       "example": "experian"},
+            "score": {"type": "integer", "minimum": 300, "maximum": 850,
+                      "description": "FICO / VantageScore value",
+                      "example": 784},
+            "model": {"type": "string",
+                      "description": "scoring model the value came from",
+                      "example": "vantage_4.0"},
+            "as_of": _iso_date("date the score was observed"),
+            "memo": {"type": "string", "default": ""},
+        },
+    },
     "LedgerEntry": {
         "type": "object",
         "description": "Normalized operator output — shape depends on kind. "
@@ -182,6 +199,7 @@ def build_openapi_spec() -> dict[str, Any]:
             {"name": "debt", "description": "debt obligations"},
             {"name": "equity", "description": "deployable capital"},
             {"name": "sub", "description": "recurring subscriptions"},
+            {"name": "credit_score", "description": "credit score observations"},
             {"name": "ledger", "description": "full ledger view"},
         ],
         "paths": {
@@ -204,6 +222,9 @@ def build_openapi_spec() -> dict[str, Any]:
             "/ledger/sub/{id}": _put_path(
                 "sub", "SubscriptionRequest", "sub",
                 "register a recurring subscription"),
+            "/ledger/credit_score/{id}": _put_path(
+                "credit_score", "CreditScoreRequest", "credit_score",
+                "record a credit score observation"),
         },
         "components": {"schemas": SCHEMAS},
     }

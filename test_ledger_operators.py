@@ -53,6 +53,7 @@ import tempfile  # noqa: E402
 from debt_operator import AddDebtOperator, Debt  # noqa: E402
 from equity_operator import AddEquityOperator, Equity  # noqa: E402
 from sub_operator import AddSubscriptionOperator, Subscription  # noqa: E402
+from credit_score_operator import AddCreditScoreOperator, CreditScore  # noqa: E402
 from payment_operator import Card  # noqa: E402
 from dq_operator import Category, CompareCategoryOperator  # noqa: E402
 import api as ledger_api  # noqa: E402
@@ -136,6 +137,59 @@ class EquityOperatorTests(unittest.TestCase):
         out = AddEquityOperator(task_id="t", equity=eq).execute(context={})
         self.assertEqual(out["journal"][0]["account"],
                          "Assets:Cash:Deployable:sp500")
+
+
+# ---------- CreditScoreOperator ----------
+
+class CreditScoreOperatorTests(unittest.TestCase):
+    def _cs(self, **over):
+        base = dict(id="c1", bureau="experian", score=784,
+                    model="vantage_4.0", as_of=date(2026, 4, 30))
+        base.update(over)
+        return CreditScore(**base)
+
+    def test_records_score_with_band_and_empty_journal(self):
+        out = AddCreditScoreOperator(
+            task_id="t", credit_score=self._cs()).execute(context={})
+        self.assertEqual(out["credit_score"]["score"], 784)
+        self.assertEqual(out["credit_score"]["band"], "very_good")
+        self.assertEqual(out["credit_score"]["as_of"], "2026-04-30")
+        self.assertEqual(out["journal"], [])
+
+    def test_band_boundaries(self):
+        cases = {300: "poor", 579: "poor", 580: "fair", 669: "fair",
+                 670: "good", 739: "good", 740: "very_good", 799: "very_good",
+                 800: "excellent", 850: "excellent"}
+        for score, band in cases.items():
+            out = AddCreditScoreOperator(
+                task_id="t", credit_score=self._cs(score=score),
+            ).execute(context={})
+            self.assertEqual(out["credit_score"]["band"], band, f"score={score}")
+
+    def test_bureau_normalized_lowercase(self):
+        out = AddCreditScoreOperator(
+            task_id="t", credit_score=self._cs(bureau="Experian"),
+        ).execute(context={})
+        self.assertEqual(out["credit_score"]["bureau"], "experian")
+
+    def test_unknown_bureau_raises(self):
+        with self.assertRaises(ValueError):
+            AddCreditScoreOperator(
+                task_id="t", credit_score=self._cs(bureau="schufa"),
+            ).execute(context={})
+
+    def test_out_of_range_score_raises(self):
+        for bad in (299, 851, 0):
+            with self.assertRaises(ValueError):
+                AddCreditScoreOperator(
+                    task_id="t", credit_score=self._cs(score=bad),
+                ).execute(context={})
+
+    def test_blank_model_raises(self):
+        with self.assertRaises(ValueError):
+            AddCreditScoreOperator(
+                task_id="t", credit_score=self._cs(model="  "),
+            ).execute(context={})
 
 
 # ---------- SubscriptionOperator ----------

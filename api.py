@@ -10,10 +10,11 @@ Endpoints:
   GET  /                       single-page frontend (HTML)
   GET  /docs                   Swagger UI
   GET  /openapi.json           OpenAPI 3.0 spec
-  PUT  /ledger/payment/<id>    body: Payment JSON
-  PUT  /ledger/debt/<id>       body: Debt JSON
-  PUT  /ledger/equity/<id>     body: Equity JSON
-  PUT  /ledger/sub/<id>        body: Subscription JSON
+  PUT  /ledger/payment/<id>       body: Payment JSON
+  PUT  /ledger/debt/<id>          body: Debt JSON
+  PUT  /ledger/equity/<id>        body: Equity JSON
+  PUT  /ledger/sub/<id>           body: Subscription JSON
+  PUT  /ledger/credit_score/<id>  body: CreditScore JSON
   GET  /ledger/<kind>/<id>     read back the normalized entry
   GET  /ledger                 list all entries grouped by kind
   DELETE /ledger/<kind>/<id>   remove an entry
@@ -84,6 +85,7 @@ from payment_operator import Card, NormalizePaymentOperator, Payment  # noqa: E4
 from debt_operator import AddDebtOperator, Debt  # noqa: E402
 from equity_operator import AddEquityOperator, Equity  # noqa: E402
 from sub_operator import AddSubscriptionOperator, Subscription  # noqa: E402
+from credit_score_operator import AddCreditScoreOperator, CreditScore  # noqa: E402
 from openapi_spec import build_openapi_spec  # noqa: E402
 
 
@@ -100,7 +102,7 @@ def _load_static(name: str) -> bytes:
 
 # ---------- stores ----------
 
-_KINDS = ("payment", "debt", "equity", "sub")
+_KINDS = ("payment", "debt", "equity", "sub", "credit_score")
 
 
 class LedgerStore(Protocol):
@@ -339,11 +341,27 @@ def _run_sub(entry_id: str, body: dict, wallet: dict[str, Card]) -> dict:
     return op.execute(context={})
 
 
+def _run_credit_score(entry_id: str, body: dict, wallet: dict[str, Card]) -> dict:
+    cs = CreditScore(
+        id=entry_id,
+        bureau=body["bureau"],
+        score=int(body["score"]),
+        model=body["model"],
+        as_of=date.fromisoformat(body["as_of"]),
+        memo=body.get("memo", ""),
+    )
+    op = AddCreditScoreOperator(
+        task_id=f"api_credit_score_{entry_id}", credit_score=cs,
+    )
+    return op.execute(context={})
+
+
 DISPATCH = {
     "payment": _run_payment,
     "debt": _run_debt,
     "equity": _run_equity,
     "sub": _run_sub,
+    "credit_score": _run_credit_score,
 }
 
 
