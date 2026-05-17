@@ -37,3 +37,37 @@ services:
       # Render injects $PORT automatically; api.py reads it.
       # Add WALLET_PATH here if/when we ship a bundled wallet file.
     autoDeploy: true
+
+  # Long-running worker that polls the API above via LedgerEventHandler,
+  # maintains rolling state, and fires alert callbacks. Shares the same
+  # Docker image — only the entrypoint script differs. Reads its knobs
+  # from the LEDGER_* env vars below; defaults in scripts/run_handler.sh
+  # mirror these so local runs behave the same as Render.
+  - type: worker
+    name: theta-handler
+    runtime: docker
+    repo: https://github.com/IamJasonBian/theta
+    branch: main
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    region: oregon
+    dockerCommand: bash operators/scripts/run_handler.sh
+    envVars:
+      - key: LEDGER_BASE_URL
+        # Point at the sibling web service. fromService binds at deploy
+        # time so the URL stays correct across Render env renames.
+        fromService:
+          type: web
+          name: theta
+          property: hostport
+      - key: LEDGER_TIMEOUT
+        value: "10"
+      - key: LEDGER_INTERVAL
+        value: "5.0"
+      - key: LEDGER_MAX_BACKOFF
+        value: "60.0"
+      - key: LEDGER_ALERT_THRESHOLD
+        value: "3"
+      - key: LEDGER_SKIP_INITIAL_SNAPSHOT
+        value: "0"
+    autoDeploy: true
