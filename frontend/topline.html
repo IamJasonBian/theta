@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Topline · Liquid + Net Worth by month</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    body { font: 14px/1.4 -apple-system, system-ui, sans-serif; margin: 24px; max-width: 880px; }
+    h1   { font-size: 18px; margin: 0 0 8px; }
+    .controls { display: flex; gap: 12px; margin: 12px 0 20px; align-items: center; }
+    label    { font-size: 12px; color: #555; display: flex; gap: 6px; align-items: center; }
+    select   { font: inherit; padding: 4px 6px; }
+    .empty   { color: #888; padding: 24px; border: 1px dashed #ccc; border-radius: 6px; text-align: center; }
+    .footer  { color: #888; font-size: 12px; margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <h1>Topline · Liquid + Net Worth by month</h1>
+  <div class="controls">
+    <label>Year <select id="year"></select></label>
+    <label>Scenario <select id="scenario"></select></label>
+  </div>
+  <canvas id="chart" height="320"></canvas>
+  <div id="empty" class="empty" hidden>No equity entries for the selected year + scenario yet. Seed some via <code>scripts/seed_monthly_snapshots.sh</code>.</div>
+  <div class="footer">
+    Liquid = sum(equity where bucket ∈ {cash, savings}). Total = sum(all equity) − sum(all debt). Source: <a href="/ledger">/ledger</a>.
+  </div>
+
+<script>
+const LIQUID_BUCKETS = new Set(["cash", "savings"]);
+// First column is YTD — the most recent month's value within the
+// selected FY+scenario, prepended so the latest position is always
+// visible at the leftmost slot regardless of how many months exist.
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const LABELS = ["YTD", ...MONTHS];
+let chart;
+
+// Each balance-snapshot entry tags its scenario via the `memo` field
+// (e.g. "base", "stretch"). Entries with an EMPTY memo are not snapshots
+// — they're either point-in-time anchors or transactional records — so
+// the chart skips them. This is the contract the seeder honours.
+const scenarioOf = (rec) => (rec?.memo || "").trim().toLowerCase();
+const monthKey   = (iso) => iso ? Number(iso.slice(5,7)) : null;
+const yearOf     = (iso) => iso ? Number(iso.slice(0,4)) : null;
+
+async function fetchLedger() {
+  const r = await fetch("/ledger");
+  if (!r.ok) throw new Error("ledger fetch failed: " + r.status);
+  return r.json();
+}
+
+function indexByMonth(ledger) {
+  // Returns { scenario: { year: { 1..12: {liquid_assets, total_assets, total_debt} } } }
+  const out = {};
+  const bump = (scenario, year, month, key, val) => {
+    out[scenario] ??= {};
+    out[scenario][year] ??= {};
+    out[scenario][year][month] ??= { liquid_assets: 0, total_assets: 0, total_debt: 0 };
+    out[scenario][year][month][key] += Number(val);
+  };
+  // Only include entries whose id starts with `snap-` AND whose memo is
+  // a non-empty scenario tag. This is the convention written by
+  // scripts/seed_monthly_snapshots.sh — `bal-*` anchors and bank-
+  // statement entries are deliberately excluded so the chart shows a
+  // clean per-month snapshot (no double counting, no debt with a
+  // 12-month-out due date piling into December).
+  const isSnap = (rec) => typeof rec?.id === "string" && rec.id.startsWith("snap-");
+  for (const entry of Object.values(ledger.equity || {})) {
+    const eq = entry.equity || {};
+    if (!isSnap(eq)) continue;
+    const sc = scenarioOf(eq);
+    if (!sc) continue;
+    const m = monthKey(eq.received_on);
+    const y = yearOf(eq.received_on);
+    if (!m || !y) continue;
+    const amt = Number(eq.amount || 0);
+    bump(sc, y, m, "total_assets", amt);
+    if (LIQUID_BUCKETS.has(eq.target_bucket)) bump(sc, y, m, "liquid_assets", amt);
+  }
+  for (const entry of Object.values(ledger.debt || {})) {
+    const d = entry.debt || {};
+    if (!isSnap(d)) continue;
+    const sc = scenarioOf(d);
+    if (!sc) continue;
+    // For snap-* debts, the snapshot month is encoded in the id suffix
+    // (`snap-<scenario>-<account>-YYYY-MM`), NOT in due_date. Reading
+    // due_date would collapse every monthly snapshot into one bucket.
+    const m4 = d.id.match(/-(\d{4})-(\d{2})$/);
+    if (!m4) continue;
+    const y = Number(m4[1]);
+    const m = Number(m4[2]);
+    bump(sc, y, m, "total_debt", d.principal || 0);
+  }
+  return out;
+}
+
+function populateFilters(byMonth) {
+  const yearSel = document.getElementById("year");
+  const scSel = document.getElementById("scenario");
+  const scenarios = Object.keys(byMonth).sort();
+  const years = [...new Set(scenarios.flatMap(s => Object.keys(byMonth[s]).map(Number)))].sort();
+  yearSel.innerHTML = years.map(y => `<option value="${y}">FY${y}</option>`).join("") || `<option>—</option>`;
+  scSel.innerHTML = scenarios.map(s => `<option value="${s}">${s}</option>`).join("") || `<option>—</option>`;
+  if (years.length) yearSel.value = String(years[years.length - 1]);
+  if (scenarios.includes("base")) scSel.value = "base";
+}
+
+function seriesFor(byMonth, year, scenario) {
+  const months = byMonth?.[scenario]?.[year] || {};
+  // Each scenario is anchored on a month — months before the first
+  // snapshot stay null. Once we hit a value, carry forward so the line
+  // doesn't drop out for gaps.
+  let last = { liquid: null, total: null };
+  let latest = { liquid: null, total: null };
+  const liquid = [], total = [];
+  for (let m = 1; m <= 12; m++) {
+    const row = months[m];
+    if (row) {
+      last.liquid = row.liquid_assets;
+      last.total  = row.total_assets - row.total_debt;
+      latest = { ...last };
+    }
+    liquid.push(last.liquid);
+    total.push(last.total);
+  }
+  // YTD = the most recent observed month within this FY+scenario.
+  // Empty year/scenario → null (chart shows blank YTD slot).
+  return {
+    liquid: [latest.liquid, ...liquid],
+    total:  [latest.total,  ...total],
+    hasAny: Object.keys(months).length > 0,
+  };
+}
+
+function render(byMonth) {
+  const year = Number(document.getElementById("year").value);
+  const sc = document.getElementById("scenario").value;
+  const { liquid, total, hasAny } = seriesFor(byMonth, year, sc);
+  document.getElementById("empty").hidden = hasAny;
+  document.getElementById("chart").style.display = hasAny ? "" : "none";
+
+  const cfg = {
+    type: "line",
+    data: {
+      labels: LABELS,
+      datasets: [
+        { label: "Liquid NW", data: liquid, borderColor: "#2a9d8f", backgroundColor: "transparent", tension: 0.2, spanGaps: true },
+        { label: "Total NW",  data: total,  borderColor: "#264653", backgroundColor: "transparent", tension: 0.2, spanGaps: true },
+      ],
+    },
+    options: {
+      responsive: true,
+      scales: { y: { ticks: { callback: v => "$" + Number(v).toLocaleString() } } },
+      plugins: {
+        tooltip: {
+          callbacks: { label: ctx => `${ctx.dataset.label}: $${Number(ctx.parsed.y).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}` },
+        },
+      },
+    },
+  };
+  if (chart) chart.destroy();
+  chart = new Chart(document.getElementById("chart"), cfg);
+}
+
+(async () => {
+  const ledger = await fetchLedger();
+  const byMonth = indexByMonth(ledger);
+  populateFilters(byMonth);
+  render(byMonth);
+  document.getElementById("year").addEventListener("change", () => render(byMonth));
+  document.getElementById("scenario").addEventListener("change", () => render(byMonth));
+})().catch(e => {
+  document.body.insertAdjacentHTML("beforeend", `<pre style="color:crimson">${e.message}</pre>`);
+});
+</script>
+</body>
+</html>

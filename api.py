@@ -389,6 +389,10 @@ def make_handler(store: LedgerStore, wallet: dict[str, Card]):
                 return self._send_bytes(
                     200, _load_static("swagger.html"), "text/html; charset=utf-8",
                 )
+            if self.path == "/topline":
+                return self._send_bytes(
+                    200, _load_static("topline.html"), "text/html; charset=utf-8",
+                )
             if self.path == "/manifest.json":
                 return self._send_bytes(
                     200, _load_static("manifest.json"),
