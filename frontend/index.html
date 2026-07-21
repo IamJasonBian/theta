@@ -381,7 +381,7 @@ async function refresh() {
   latestLedger = data;  // cache for collision-check in submit handler
   const root = $('#ledger');
   root.innerHTML = '';
-  for (const kind of ['payment', 'debt', 'equity', 'sub']) {
+  for (const kind of ['payment', 'debt', 'equity', 'sub', 'card']) {
     const entries = data[kind] || {};
     const ids = Object.keys(entries);
     const group = document.createElement('div');
@@ -428,6 +428,14 @@ function summarize(kind, entry) {
   if (kind === 'debt') return `$${entry.debt?.principal} → ${entry.debt?.creditor}`;
   if (kind === 'equity') return `$${entry.equity?.amount} from ${entry.equity?.source}`;
   if (kind === 'sub') return `$${entry.subscription?.amount}/${entry.subscription?.frequency} ${entry.subscription?.service}`;
+  if (kind === 'card') {
+    const c = entry.card, s = entry.summary;
+    let str = `${c?.name} · due ${s?.next_due_date}`;
+    if (s?.is_overdue) str += ' · OVERDUE';
+    if (s?.autopay_enabled) str += ` · autopay ${s?.next_autopay_date ?? ''}`;
+    str += ` · ${s?.historical_due_count}◂ ${s?.upcoming_due_count}▸`;
+    return str;
+  }
   return '';
 }
 

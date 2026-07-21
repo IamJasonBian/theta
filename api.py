@@ -84,6 +84,11 @@ from payment_operator import Card, NormalizePaymentOperator, Payment  # noqa: E4
 from debt_operator import AddDebtOperator, Debt  # noqa: E402
 from equity_operator import AddEquityOperator, Equity  # noqa: E402
 from sub_operator import AddSubscriptionOperator, Subscription  # noqa: E402
+from plaid_operator import (  # noqa: E402
+    Autopay,
+    CardAccount,
+    SyncCardScheduleOperator,
+)
 from openapi_spec import build_openapi_spec  # noqa: E402
 
 
@@ -100,7 +105,7 @@ def _load_static(name: str) -> bytes:
 
 # ---------- stores ----------
 
-_KINDS = ("payment", "debt", "equity", "sub")
+_KINDS = ("payment", "debt", "equity", "sub", "card")
 
 
 class LedgerStore(Protocol):
@@ -339,11 +344,46 @@ def _run_sub(entry_id: str, body: dict, wallet: dict[str, Card]) -> dict:
     return op.execute(context={})
 
 
+def _run_card(entry_id: str, body: dict, wallet: dict[str, Card]) -> dict:
+    ap_raw = body.get("autopay") or {}
+    autopay = Autopay(
+        enabled=bool(ap_raw.get("enabled", False)),
+        basis=ap_raw.get("basis", "statement_balance"),
+        amount=(Decimal(str(ap_raw["amount"]))
+                if ap_raw.get("amount") is not None else None),
+        lead_days=int(ap_raw.get("lead_days", 0)),
+    )
+    card = CardAccount(
+        id=entry_id,
+        name=body["name"],
+        next_due_date=date.fromisoformat(body["next_due_date"]),
+        issuer=body.get("issuer", ""),
+        apr=Decimal(str(body.get("apr", "0"))),
+        statement_balance=Decimal(str(body.get("statement_balance", "0"))),
+        minimum_payment=Decimal(str(body.get("minimum_payment", "0"))),
+        grace_period_days=int(body.get("grace_period_days", 21)),
+        last_payment_date=(date.fromisoformat(body["last_payment_date"])
+                           if body.get("last_payment_date") else None),
+        last_payment_amount=Decimal(str(body.get("last_payment_amount", "0"))),
+        is_overdue=bool(body.get("is_overdue", False)),
+        autopay=autopay,
+    )
+    op = SyncCardScheduleOperator(
+        task_id=f"api_card_{entry_id}",
+        card=card,
+        as_of=(date.fromisoformat(body["as_of"]) if body.get("as_of") else None),
+        lookback=int(body.get("lookback", 6)),
+        lookahead=int(body.get("lookahead", 6)),
+    )
+    return op.execute(context={})
+
+
 DISPATCH = {
     "payment": _run_payment,
     "debt": _run_debt,
     "equity": _run_equity,
     "sub": _run_sub,
+    "card": _run_card,
 }
 
 

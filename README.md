@@ -24,8 +24,12 @@ operators/
 ├── debt_operator.py           # AddDebtOperator
 ├── equity_operator.py         # AddEquityOperator
 ├── sub_operator.py            # AddSubscriptionOperator
+├── plaid_operator.py          # SyncCardScheduleOperator (card due-date/autopay events)
+├── scripts/
+│   └── fetch_plaid_liabilities.py  # pull 5th Street Capital liabilities from Plaid
 ├── test_payment_operator.py
 ├── test_ledger_operators.py
+├── test_plaid_operator.py
 ├── Dockerfile
 └── README.md
 ```
@@ -63,6 +67,59 @@ month rollover for short months, and rolls Feb 29 → Feb 28 in non-leap years.
 
 | Journal | Dr `Expenses:Subscriptions:<service>` | Cr card side (credit or debit) |
 |---|---|---|
+
+### `SyncCardScheduleOperator` — card due-date & autopay events
+Expands a single credit-card liability snapshot (the shape Plaid's
+`/liabilities/get` returns) into a **timeline of due-date and autopay events**,
+both historical and future. Anchored on the reported `next_due_date` and the
+card's statement cycle, it walks `lookback` past cycles and `lookahead` future
+cycles (default 6 each) and emits, per cycle:
+
+- a `payment_due` event on the statement's due date, and
+- an `autopay` event (if autopay is enabled) `lead_days` before the due date.
+
+Each event is tagged `phase` (`historical` / `due_today` / `upcoming`) relative
+to `as_of`. Historical due events are reconciled against the reported
+last-payment info to mark `paid`; the current cycle carries `is_overdue`
+straight from Plaid. Dollar figures are only reported where they're real —
+Plaid only gives real amounts for the current cycle, so other cycles have
+`amount: null` / `estimated: true` (a *fixed*-amount autopay is the one
+exception, being known every cycle). This is a projection, not a journal, so it
+produces no ledger lines.
+
+Output: `{ card, as_of, window, events[], summary }`.
+
+### Pulling from Plaid (`scripts/fetch_plaid_liabilities.py`)
+`scripts/fetch_plaid_liabilities.py` pulls the **5th Street Capital** credit
+liability from Plaid, runs it through `SyncCardScheduleOperator`, and optionally
+PUTs the result into the ledger as a `card` entry.
+
+It reuses the same Plaid application as the **bitcoin tracker** project, whose
+credentials live as environment variables in Netlify. Credentials are resolved
+in priority order:
+
+1. `--secrets-url` / `PLAID_SECRETS_URL` — a Netlify function on the
+   bitcoin-tracker site returning `{client_id, secret, access_token, env}`.
+   Nothing sensitive is hardcoded; the creds stay in Netlify and are fetched at
+   run time. **This is the intended path.**
+2. Direct `PLAID_CLIENT_ID` / `PLAID_SECRET` / `PLAID_ACCESS_TOKEN` /
+   `PLAID_ENV` env vars — handy for local runs.
+
+Plaid liabilities does not expose autopay settings, so those are supplied via
+`--autopay-enabled` / `--autopay-basis` / `--autopay-amount` /
+`--autopay-lead-days` (or the matching `PLAID_AUTOPAY_*` env vars).
+
+```bash
+# dry run — print the synced schedule, don't touch the ledger
+PLAID_SECRETS_URL=https://bitcoin-tracker.netlify.app/.netlify/functions/plaid-secrets \
+  python3 scripts/fetch_plaid_liabilities.py --dry-run --autopay-enabled
+
+# sync into the ledger
+python3 scripts/fetch_plaid_liabilities.py \
+    --secrets-url https://bitcoin-tracker.netlify.app/.netlify/functions/plaid-secrets \
+    --theta https://theta-lz6e.onrender.com \
+    --autopay-enabled --autopay-basis statement_balance
+```
 
 ### Entities and Design Conventions
 - Dataclass inputs, typed kwargs, `execute(context) -> dict`.
@@ -114,6 +171,7 @@ Stdlib `http.server` — no third-party deps, not even Airflow (we stub
 | `/ledger/debt/<id>` | PUT | Register a debt |
 | `/ledger/equity/<id>` | PUT | Register equity |
 | `/ledger/sub/<id>` | PUT | Register a subscription |
+| `/ledger/card/<id>` | PUT | Sync a card's due-date & autopay events |
 | `/ledger/<kind>/<id>` | DELETE | Remove an entry |
 
 `PUT` is idempotent upsert keyed by client-supplied id — the same id twice

@@ -92,6 +92,50 @@ SCHEMAS: dict[str, Any] = {
             "memo": {"type": "string", "default": ""},
         },
     },
+    "Autopay": {
+        "type": "object",
+        "description": "Autopay configuration for a card (user-supplied; Plaid "
+                       "liabilities does not expose autopay settings).",
+        "properties": {
+            "enabled": {"type": "boolean", "default": False},
+            "basis": {"type": "string",
+                      "enum": ["statement_balance", "minimum", "fixed"],
+                      "default": "statement_balance",
+                      "description": "what the autopay draft pulls each cycle"},
+            "amount": _decimal_str("fixed draft amount; used when basis=fixed"),
+            "lead_days": {"type": "integer", "default": 0,
+                          "description": "days before the due date the draft posts"},
+        },
+    },
+    "CardRequest": {
+        "type": "object",
+        "required": ["name", "next_due_date"],
+        "description": "A credit-card liability snapshot (shaped after Plaid's "
+                       "/liabilities/get credit account) plus an optional "
+                       "autopay config. Expanded into a historical+future "
+                       "timeline of due-date and autopay events.",
+        "properties": {
+            "name": {"type": "string", "example": "5th Street Capital"},
+            "next_due_date": _iso_date("next payment due date (Plaid: "
+                                       "next_payment_due_date)"),
+            "issuer": {"type": "string", "default": ""},
+            "apr": _decimal_str("purchase APR (default 0)"),
+            "statement_balance": _decimal_str("last statement balance"),
+            "minimum_payment": _decimal_str("minimum payment due"),
+            "grace_period_days": {"type": "integer", "default": 21,
+                                  "description": "statement close -> due offset"},
+            "last_payment_date": _iso_date("date of last payment (optional)"),
+            "last_payment_amount": _decimal_str("amount of last payment"),
+            "is_overdue": {"type": "boolean", "default": False},
+            "autopay": {"$ref": "#/components/schemas/Autopay"},
+            "as_of": _iso_date("valuation date splitting historical/upcoming "
+                               "(default today)"),
+            "lookback": {"type": "integer", "default": 6,
+                         "description": "how many past cycles to emit"},
+            "lookahead": {"type": "integer", "default": 6,
+                          "description": "how many future cycles to emit"},
+        },
+    },
     "LedgerEntry": {
         "type": "object",
         "description": "Normalized operator output — shape depends on kind. "
@@ -182,6 +226,7 @@ def build_openapi_spec() -> dict[str, Any]:
             {"name": "debt", "description": "debt obligations"},
             {"name": "equity", "description": "deployable capital"},
             {"name": "sub", "description": "recurring subscriptions"},
+            {"name": "card", "description": "card due-date & autopay events"},
             {"name": "ledger", "description": "full ledger view"},
         ],
         "paths": {
@@ -204,6 +249,9 @@ def build_openapi_spec() -> dict[str, Any]:
             "/ledger/sub/{id}": _put_path(
                 "sub", "SubscriptionRequest", "sub",
                 "register a recurring subscription"),
+            "/ledger/card/{id}": _put_path(
+                "card", "CardRequest", "card",
+                "sync a card's due-date & autopay events"),
         },
         "components": {"schemas": SCHEMAS},
     }

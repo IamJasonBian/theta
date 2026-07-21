@@ -352,7 +352,7 @@ class ApiE2ETests(unittest.TestCase):
             # and should not be the original v1 (which no longer matches
             # the HTML shape shipped in later commits). If this fails,
             # bump the version constant in frontend/sw.js.
-            self.assertIn("theta-shell-v2", body)
+            self.assertIn("theta-shell-v3", body)
 
     def test_frontend_has_mobile_meta_tags(self):
         req = urllib.request.Request(self.base + "/")

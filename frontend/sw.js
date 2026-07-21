@@ -15,9 +15,10 @@
 //
 // Bump history:
 //   v1 — initial ship (commit d143a10)
-//   v2 — pick up id-handling + default fallback + DQ work (current)
+//   v2 — pick up id-handling + default fallback + DQ work
+//   v3 — render card due-date/autopay entries in the ledger view (current)
 
-const CACHE_VERSION = 'theta-shell-v2';
+const CACHE_VERSION = 'theta-shell-v3';
 const SHELL_ASSETS = [
   '/',
   '/index.html',
