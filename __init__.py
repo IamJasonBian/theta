@@ -19,12 +19,15 @@ from .debt_operator import AddDebtOperator, Debt
 from .equity_operator import AddEquityOperator, Equity
 from .sub_operator import AddSubscriptionOperator, Subscription
 from .dq_operator import Category, CompareCategoryOperator
+from .plaid_operator import Autopay, CardAccount, SyncCardScheduleOperator
 
 __all__ = [
     "AddDebtOperator",
     "AddEquityOperator",
     "AddSubscriptionOperator",
+    "Autopay",
     "Card",
+    "CardAccount",
     "Category",
     "CompareCategoryOperator",
     "Debt",
@@ -33,4 +36,5 @@ __all__ = [
     "NormalizePaymentOperator",
     "Payment",
     "Subscription",
+    "SyncCardScheduleOperator",
 ]
