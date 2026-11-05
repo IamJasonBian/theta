@@ -18,6 +18,14 @@ Endpoints:
   GET  /ledger                 list all entries grouped by kind
   DELETE /ledger/<kind>/<id>   remove an entry
 
+  GET  /plaid                  Plaid connect frontend (HTML)
+  GET  /plaid/link-token       short-lived token for the Plaid Link widget
+  POST /plaid/exchange         body: {"public_token": "..."}
+  GET  /plaid/status           connected? institution name
+  POST /plaid/disconnect       revoke item + clear local token
+  GET  /plaid/liabilities      normalized upcoming-payment view (read-only)
+  POST /plaid/sync             upsert liabilities as ledger debt entries
+
 Run directly:
     python3 operators/api.py                 # binds 127.0.0.1:8765
     python3 operators/api.py 0.0.0.0 9000    # custom host/port
@@ -89,6 +97,14 @@ from plaid_operator import (  # noqa: E402
     CardAccount,
     SyncCardScheduleOperator,
 )
+from plaid_client import (  # noqa: E402
+    PlaidAPIError,
+    PlaidClient,
+    PlaidConnectionError,
+    PlaidError,
+    PlaidTimeoutError,
+)
+from plaid_store import PlaidTokenStore  # noqa: E402
 from openapi_spec import build_openapi_spec  # noqa: E402
 
 
@@ -387,9 +403,101 @@ DISPATCH = {
 }
 
 
+# ---------- Plaid helpers ----------
+
+def _purchase_apr(aprs: list[dict[str, Any]]) -> Decimal:
+    """Pick the purchase APR from a Plaid credit liability, falling back
+    to the first APR present. Plaid returns percentages (19.99 = 19.99%)
+    while theta's Debt model expects a decimal fraction (0.1999), so we
+    divide by 100 here."""
+    if not aprs:
+        return Decimal("0")
+    pick = next(
+        (a for a in aprs if (a.get("apr_type") or "").lower() == "purchase_apr"),
+        aprs[0],
+    )
+    pct = pick.get("apr_percentage") or 0
+    return (Decimal(str(pct)) / Decimal("100")).quantize(Decimal("0.0001"))
+
+
+def _normalize_liabilities(
+    liabilities_response: dict[str, Any],
+    *,
+    today: date,
+) -> list[dict[str, Any]]:
+    """Project Plaid's /liabilities/get into theta-shaped Debt records.
+
+    Returns a list of dicts ready to feed AddDebtOperator. ID format is
+    ``plaid-<kind>-<account_id>`` so re-syncing produces UPDATEs against
+    the same ledger slot rather than duplicates.
+    """
+    accounts = {a["account_id"]: a for a in liabilities_response.get("accounts", [])}
+    liabilities = liabilities_response.get("liabilities") or {}
+    out: list[dict[str, Any]] = []
+
+    for kind, rows in (
+        ("credit", liabilities.get("credit") or []),
+        ("mortgage", liabilities.get("mortgage") or []),
+        ("student", liabilities.get("student") or []),
+    ):
+        for row in rows:
+            acct = accounts.get(row.get("account_id"), {})
+            balances = acct.get("balances") or {}
+            principal = balances.get("current")
+            if principal is None:
+                # No balance → nothing to bill for; skip rather than
+                # write a zero-principal debt that misleads the chart.
+                continue
+
+            # Pick the most informative due-date field per liability kind.
+            if kind == "credit":
+                due = row.get("next_payment_due_date") or row.get("last_statement_issue_date")
+                apr = _purchase_apr(row.get("aprs") or [])
+                min_pmt = row.get("minimum_payment_amount")
+            elif kind == "mortgage":
+                due = row.get("next_payment_due_date")
+                apr = Decimal(str(row.get("interest_rate", {}).get("percentage") or 0)) / Decimal("100")
+                min_pmt = row.get("next_monthly_payment")
+            else:  # student
+                due = row.get("next_payment_due_date")
+                apr = Decimal(str(row.get("interest_rate_percentage") or 0)) / Decimal("100")
+                min_pmt = row.get("minimum_payment_amount")
+
+            if not due:
+                # Without a due date the row can't slot into the upcoming-
+                # payments view. Skip rather than fabricate.
+                continue
+
+            creditor = (
+                acct.get("official_name")
+                or acct.get("name")
+                or f"plaid-{kind}"
+            )
+
+            out.append({
+                "id": f"plaid-{kind}-{row['account_id']}",
+                "creditor": creditor,
+                "principal": str(principal),
+                "due_date": due,
+                "apr": str(apr),
+                "as_of": today.isoformat(),
+                "memo": (
+                    f"plaid-synced kind={kind}"
+                    + (f" min={min_pmt}" if min_pmt is not None else "")
+                ),
+            })
+    return out
+
+
 # ---------- HTTP handler ----------
 
-def make_handler(store: LedgerStore, wallet: dict[str, Card]):
+def make_handler(
+    store: LedgerStore,
+    wallet: dict[str, Card],
+    plaid_client: PlaidClient | None = None,
+    plaid_store: PlaidTokenStore | None = None,
+    plaid_user_id: str = "theta-user",
+):
     class Handler(BaseHTTPRequestHandler):
         server_version = "LedgerAPI/0.1"
 
@@ -433,6 +541,12 @@ def make_handler(store: LedgerStore, wallet: dict[str, Card]):
                 return self._send_bytes(
                     200, _load_static("topline.html"), "text/html; charset=utf-8",
                 )
+            if self.path == "/plaid":
+                return self._send_bytes(
+                    200, _load_static("plaid.html"), "text/html; charset=utf-8",
+                )
+            if self.path.startswith("/plaid/"):
+                return self._handle_plaid_get()
             if self.path == "/manifest.json":
                 return self._send_bytes(
                     200, _load_static("manifest.json"),
@@ -492,7 +606,187 @@ def make_handler(store: LedgerStore, wallet: dict[str, Card]):
             self._send_json(200 if existed else 404,
                             {"deleted": existed, "id": entry_id})
 
+        # ---------- Plaid routes ----------
+        #
+        # Best-practice posture: the secret never reaches the browser
+        # (it lives in os.environ on the server only); the access_token
+        # also stays server-side (persisted via plaid_store). The
+        # frontend handles only link_token (short-lived, scoped to one
+        # Link session) and public_token (single-use, exchanged here).
+
+        def _read_json_body(self) -> dict[str, Any] | None:
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                return json.loads(self.rfile.read(length) or b"{}")
+            except json.JSONDecodeError as e:
+                self._send_json(400, {"error": f"bad json: {e}"})
+                return None
+
+        def _plaid_unavailable(self) -> bool:
+            if plaid_client is None or plaid_store is None:
+                self._send_json(503, {"error": (
+                    "Plaid not configured — set PLAID_CLIENT_ID and "
+                    "PLAID_SECRET in the environment and restart."
+                )})
+                return True
+            return False
+
+        def _plaid_error(self, e: Exception) -> None:
+            if isinstance(e, PlaidAPIError):
+                self._send_json(e.status or 502, {
+                    "error": str(e),
+                    "error_type": e.error_type,
+                    "error_code": e.error_code,
+                    "request_id": e.request_id,
+                })
+            elif isinstance(e, PlaidConnectionError):
+                self._send_json(502, {"error": str(e)})
+            elif isinstance(e, PlaidTimeoutError):
+                self._send_json(504, {"error": str(e)})
+            else:
+                self._send_json(500, {"error": str(e)})
+
+        def _handle_plaid_get(self) -> None:
+            if self._plaid_unavailable():
+                return
+            try:
+                if self.path == "/plaid/link-token":
+                    resp = plaid_client.link_token_create(
+                        user_id=plaid_user_id,
+                        products=("liabilities",),
+                    )
+                    return self._send_json(200, {
+                        "link_token": resp.get("link_token"),
+                        "expiration": resp.get("expiration"),
+                    })
+
+                if self.path == "/plaid/status":
+                    tok = plaid_store.get()
+                    if not tok:
+                        return self._send_json(200, {
+                            "connected": False, "message": "Not connected",
+                        })
+                    return self._send_json(200, {
+                        "connected": True,
+                        "item_id": tok.get("item_id"),
+                        "institution_id": tok.get("institution_id"),
+                        "institution_name": tok.get("institution_name"),
+                        "connected_at": tok.get("created_at"),
+                    })
+
+                if self.path == "/plaid/liabilities":
+                    tok = plaid_store.get()
+                    if not tok:
+                        return self._send_json(401, {
+                            "error": "not connected — POST /plaid/exchange first",
+                        })
+                    resp = plaid_client.liabilities_get(tok["access_token"])
+                    normalized = _normalize_liabilities(resp, today=date.today())
+                    return self._send_json(200, {
+                        "upcoming": normalized,
+                        "count": len(normalized),
+                    })
+
+                self._send_json(404, {"error": "unknown plaid route"})
+            except PlaidError as e:
+                self._plaid_error(e)
+
+        def do_POST(self) -> None:  # noqa: N802
+            if not self.path.startswith("/plaid/"):
+                return self._send_json(404, {"error": "bad route"})
+            if self._plaid_unavailable():
+                return
+            try:
+                if self.path == "/plaid/exchange":
+                    body = self._read_json_body()
+                    if body is None:
+                        return
+                    public_token = body.get("public_token")
+                    if not public_token:
+                        return self._send_json(
+                            400, {"error": "public_token is required"})
+                    exch = plaid_client.item_public_token_exchange(public_token)
+                    access_token = exch["access_token"]
+                    item_id = exch["item_id"]
+                    inst_id = inst_name = None
+                    try:
+                        item = plaid_client.item_get(access_token)
+                        inst_id = item.get("item", {}).get("institution_id")
+                        if inst_id:
+                            inst = plaid_client.institutions_get_by_id(inst_id)
+                            inst_name = inst.get("institution", {}).get("name")
+                    except PlaidError:
+                        # Institution name is decorative — never let a
+                        # lookup failure break the actual exchange.
+                        pass
+                    plaid_store.save(
+                        access_token=access_token,
+                        item_id=item_id,
+                        institution_id=inst_id,
+                        institution_name=inst_name,
+                    )
+                    return self._send_json(200, {
+                        "connected": True,
+                        "item_id": item_id,
+                        "institution_id": inst_id,
+                        "institution_name": inst_name,
+                    })
+
+                if self.path == "/plaid/disconnect":
+                    tok = plaid_store.get()
+                    if tok:
+                        try:
+                            plaid_client.item_remove(tok["access_token"])
+                        except PlaidError:
+                            # Plaid-side remove is best-effort — if it
+                            # fails we still clear our local token so
+                            # the user can reconnect cleanly.
+                            pass
+                    plaid_store.clear()
+                    return self._send_json(200, {
+                        "connected": False, "message": "Disconnected",
+                    })
+
+                if self.path == "/plaid/sync":
+                    tok = plaid_store.get()
+                    if not tok:
+                        return self._send_json(
+                            401, {"error": "not connected"})
+                    resp = plaid_client.liabilities_get(tok["access_token"])
+                    rows = _normalize_liabilities(resp, today=date.today())
+                    synced: list[str] = []
+                    for row in rows:
+                        result = _run_debt(row["id"], row, wallet)
+                        store.put("debt", row["id"], result)
+                        synced.append(row["id"])
+                    return self._send_json(200, {
+                        "synced": synced, "count": len(synced),
+                    })
+
+                self._send_json(404, {"error": "unknown plaid route"})
+            except PlaidError as e:
+                self._plaid_error(e)
+
     return Handler
+
+
+def build_plaid() -> tuple[PlaidClient | None, PlaidTokenStore | None, str]:
+    """Build the Plaid client + token store from env vars.
+
+    Returns (None, None, _) when PLAID_CLIENT_ID/PLAID_SECRET aren't set,
+    which makes /plaid/* routes 503 with a helpful message instead of
+    crashing startup. theta should run fine without Plaid configured."""
+    client_id = os.environ.get("PLAID_CLIENT_ID")
+    secret = os.environ.get("PLAID_SECRET")
+    user_id = os.environ.get("PLAID_USER_ID", "theta-user")
+    if not client_id or not secret:
+        return None, None, user_id
+
+    env = os.environ.get("PLAID_ENV", "sandbox")
+    timeout = float(os.environ.get("PLAID_TIMEOUT", "10"))
+    client = PlaidClient(client_id, secret, env=env, timeout=timeout)
+    token_path = os.environ.get("PLAID_TOKEN_PATH", "plaid_token.json")
+    return client, PlaidTokenStore(token_path), user_id
 
 
 def build_server(host: str = "127.0.0.1", port: int = 8765,
@@ -500,10 +794,13 @@ def build_server(host: str = "127.0.0.1", port: int = 8765,
                  store: LedgerStore | None = None) -> ThreadingHTTPServer:
     store = store if store is not None else build_store()
     wallet = wallet if wallet is not None else load_wallet(os.environ.get("WALLET_PATH"))
-    handler = make_handler(store, wallet)
+    plaid_client, plaid_store, plaid_user_id = build_plaid()
+    handler = make_handler(store, wallet, plaid_client, plaid_store, plaid_user_id)
     server = ThreadingHTTPServer((host, port), handler)
     server.store = store  # type: ignore[attr-defined]
     server.wallet = wallet  # type: ignore[attr-defined]
+    server.plaid_client = plaid_client  # type: ignore[attr-defined]
+    server.plaid_store = plaid_store  # type: ignore[attr-defined]
     return server
 
 
