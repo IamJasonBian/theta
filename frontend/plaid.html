@@ -72,7 +72,7 @@ function setConnected(s) {
   if (s.connected) {
     badge.className = 'badge on';
     badge.textContent = 'connected';
-    $('#institution').textContent = s.institution_name ? `— ${s.institution_name}` : '';
+    $('#institution').textContent = (s.items || []).length ? `— ${s.items.map(i => i.institution_name).join(', ')}` : '';
     $('#btn-connect').textContent = 'Reconnect';
     $('#btn-sync').disabled = false;
     $('#btn-disconnect').disabled = false;
@@ -146,7 +146,7 @@ async function startConnect() {
 async function disconnect() {
   showError(null);
   try {
-    await api('/plaid/disconnect', { method: 'POST' });
+    await api('/plaid/disconnect', { method: 'POST', body: '{}' });
     await refreshStatus();
     $('#upcoming').textContent = '(connect to see upcoming payments)';
   } catch (e) {

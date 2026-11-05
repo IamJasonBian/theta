@@ -654,6 +654,7 @@ def make_handler(
                     resp = plaid_client.link_token_create(
                         user_id=plaid_user_id,
                         products=("liabilities",),
+                        redirect_uri=os.environ.get("PLAID_REDIRECT_URI"),
                     )
                     return self._send_json(200, {
                         "link_token": resp.get("link_token"),
@@ -661,27 +662,28 @@ def make_handler(
                     })
 
                 if self.path == "/plaid/status":
-                    tok = plaid_store.get()
-                    if not tok:
-                        return self._send_json(200, {
-                            "connected": False, "message": "Not connected",
-                        })
+                    items = [{
+                        "item_id": t.get("item_id"),
+                        "institution_id": t.get("institution_id"),
+                        "institution_name": t.get("institution_name"),
+                        "connected_at": t.get("created_at"),
+                    } for t in plaid_store.items()]
                     return self._send_json(200, {
-                        "connected": True,
-                        "item_id": tok.get("item_id"),
-                        "institution_id": tok.get("institution_id"),
-                        "institution_name": tok.get("institution_name"),
-                        "connected_at": tok.get("created_at"),
+                        "connected": bool(items), "items": items,
                     })
 
                 if self.path == "/plaid/liabilities":
-                    tok = plaid_store.get()
-                    if not tok:
+                    toks = plaid_store.items()
+                    if not toks:
                         return self._send_json(401, {
                             "error": "not connected — POST /plaid/exchange first",
                         })
-                    resp = plaid_client.liabilities_get(tok["access_token"])
-                    normalized = _normalize_liabilities(resp, today=date.today())
+                    normalized = [
+                        row for t in toks
+                        for row in _normalize_liabilities(
+                            plaid_client.liabilities_get(t["access_token"]),
+                            today=date.today())
+                    ]
                     return self._send_json(200, {
                         "upcoming": normalized,
                         "count": len(normalized),
@@ -733,8 +735,13 @@ def make_handler(
                     })
 
                 if self.path == "/plaid/disconnect":
-                    tok = plaid_store.get()
-                    if tok:
+                    body = self._read_json_body()
+                    if body is None:
+                        return
+                    item_id = body.get("item_id")  # None → all items
+                    toks = ([plaid_store.get(item_id)] if item_id
+                            else plaid_store.items())
+                    for tok in filter(None, toks):
                         try:
                             plaid_client.item_remove(tok["access_token"])
                         except PlaidError:
@@ -742,18 +749,23 @@ def make_handler(
                             # fails we still clear our local token so
                             # the user can reconnect cleanly.
                             pass
-                    plaid_store.clear()
+                    plaid_store.clear(item_id)
                     return self._send_json(200, {
-                        "connected": False, "message": "Disconnected",
+                        "connected": bool(plaid_store.items()),
+                        "message": "Disconnected",
                     })
 
                 if self.path == "/plaid/sync":
-                    tok = plaid_store.get()
-                    if not tok:
+                    toks = plaid_store.items()
+                    if not toks:
                         return self._send_json(
                             401, {"error": "not connected"})
-                    resp = plaid_client.liabilities_get(tok["access_token"])
-                    rows = _normalize_liabilities(resp, today=date.today())
+                    rows = [
+                        row for t in toks
+                        for row in _normalize_liabilities(
+                            plaid_client.liabilities_get(t["access_token"]),
+                            today=date.today())
+                    ]
                     synced: list[str] = []
                     for row in rows:
                         result = _run_debt(row["id"], row, wallet)

@@ -218,6 +218,37 @@ class PlaidTokenStoreTests(unittest.TestCase):
             f.write("{not json")
         self.assertIsNone(PlaidTokenStore(self.path).get())
 
+    def test_multiple_items_per_bank(self):
+        store = PlaidTokenStore(self.path)
+        for item, ins in (("i-chase", "ins_56"), ("i-amex", "ins_10"),
+                          ("i-c1", "ins_128026")):
+            store.save(access_token=f"a-{item}", item_id=item, institution_id=ins)
+        self.assertEqual({t["item_id"] for t in store.items()},
+                         {"i-chase", "i-amex", "i-c1"})
+        self.assertEqual(store.get("i-amex")["access_token"], "a-i-amex")
+
+    def test_relink_same_institution_replaces_item(self):
+        store = PlaidTokenStore(self.path)
+        store.save(access_token="old", item_id="i-old", institution_id="ins_56")
+        store.save(access_token="new", item_id="i-new", institution_id="ins_56")
+        self.assertEqual([t["item_id"] for t in store.items()], ["i-new"])
+
+    def test_clear_one_item_keeps_others(self):
+        store = PlaidTokenStore(self.path)
+        store.save(access_token="a", item_id="i1", institution_id="ins_56")
+        store.save(access_token="b", item_id="i2", institution_id="ins_10")
+        self.assertTrue(store.clear("i1"))
+        self.assertFalse(store.clear("i1"))
+        self.assertEqual([t["item_id"] for t in store.items()], ["i2"])
+
+    def test_legacy_single_record_file_reads_as_one_item(self):
+        with open(self.path, "w") as f:
+            f.write('{"access_token": "a", "item_id": "legacy"}')
+        store = PlaidTokenStore(self.path)
+        self.assertEqual([t["item_id"] for t in store.items()], ["legacy"])
+        store.save(access_token="b", item_id="i2")
+        self.assertEqual(len(store.items()), 2)
+
 
 # ---------- Liability normalization (the /plaid/sync engine) ----------
 

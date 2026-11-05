@@ -180,6 +180,7 @@ class PlaidClient:
         country_codes: Iterable[str] = ("US",),
         language: str = "en",
         webhook: str | None = None,
+        redirect_uri: str | None = None,
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "client_id": self.client_id,
@@ -192,6 +193,9 @@ class PlaidClient:
         }
         if webhook:
             body["webhook"] = webhook
+        if redirect_uri:
+            # OAuth banks (Chase, Capital One, Amex) bounce back here.
+            body["redirect_uri"] = redirect_uri
         return self._post("/link/token/create", body)
 
     def item_public_token_exchange(self, public_token: str) -> dict[str, Any]:
