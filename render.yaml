@@ -36,6 +36,22 @@ services:
         value: /data/theta.sqlite
       # Render injects $PORT automatically; api.py reads it.
       # Add WALLET_PATH here if/when we ship a bundled wallet file.
+      # ---- Plaid (issue #4 Phase 2 — liabilities sync) ----
+      # PLAID_CLIENT_ID and PLAID_SECRET are sync:false so values are
+      # set in the Render dashboard, never committed. They're the same
+      # Plaid app already in use on the 5thstreetcapital Netlify site
+      # (PLAID_CLIENT_ID / PLAID_SECRET there). PLAID_ENV stays
+      # sandbox until you're ready to point at real banks.
+      - key: PLAID_CLIENT_ID
+        sync: false
+      - key: PLAID_SECRET
+        sync: false
+      - key: PLAID_ENV
+        value: sandbox
+      - key: PLAID_TOKEN_PATH
+        value: /data/plaid_token.json
+      - key: PLAID_USER_ID
+        value: theta-user
     autoDeploy: true
 
   # Long-running worker that polls the API above via LedgerEventHandler,

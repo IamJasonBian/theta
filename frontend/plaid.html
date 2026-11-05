@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Connect accounts · theta</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+  <!-- Plaid Link initializer. Loaded from Plaid's CDN — the only
+       runtime dep, same pattern as topline.html pulling Chart.js. -->
+  <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+  <style>
+    body  { font: 14px/1.4 -apple-system, system-ui, sans-serif; margin: 24px; max-width: 720px; }
+    h1    { font-size: 18px; margin: 0 0 8px; }
+    .row  { display: flex; gap: 10px; align-items: center; margin: 12px 0; flex-wrap: wrap; }
+    .badge { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 12px; }
+    .badge.on  { background: #e7f7ee; color: #1a7a3e; }
+    .badge.off { background: #eee; color: #555; }
+    button { font: inherit; padding: 6px 12px; border: 1px solid #aaa; background: #fff; border-radius: 6px; cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button.primary { background: #1a73e8; border-color: #1a73e8; color: #fff; }
+    button.danger  { color: #b00020; border-color: #b00020; }
+    pre  { background: #f6f6f6; padding: 10px; border-radius: 6px; overflow: auto; font-size: 12px; }
+    .err { background: #fdecea; color: #611a15; padding: 8px 10px; border-radius: 6px; font-size: 13px; }
+    table { border-collapse: collapse; width: 100%; font-size: 13px; }
+    th, td { border-bottom: 1px solid #eee; padding: 6px 8px; text-align: left; }
+    th { background: #fafafa; }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .footer { color: #888; font-size: 12px; margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <h1>Connect accounts</h1>
+  <div class="row">
+    Status: <span id="status" class="badge off">unknown</span>
+    <span id="institution"></span>
+  </div>
+  <div class="row">
+    <button id="btn-connect"     class="primary">Connect with Plaid</button>
+    <button id="btn-sync"        disabled>Sync upcoming payments → ledger</button>
+    <button id="btn-disconnect"  class="danger" disabled>Disconnect</button>
+  </div>
+  <div id="error" class="err" hidden></div>
+  <h3>Upcoming payments</h3>
+  <div id="upcoming">(connect to see upcoming payments)</div>
+  <div class="footer">
+    Best-practice posture: PLAID_SECRET stays server-side. The browser only sees a short-lived <code>link_token</code> and forwards <code>public_token</code>; the long-lived <code>access_token</code> is exchanged and persisted server-side via <a href="/plaid/status">/plaid/status</a>.
+  </div>
+
+<script>
+const $ = sel => document.querySelector(sel);
+
+const showError = (msg) => {
+  const el = $('#error');
+  if (!msg) { el.hidden = true; el.textContent = ''; return; }
+  el.hidden = false; el.textContent = msg;
+};
+
+async function api(path, opts) {
+  const r = await fetch(path, {
+    headers: { 'Content-Type': 'application/json' },
+    ...opts,
+  });
+  const txt = await r.text();
+  let data = {};
+  try { data = txt ? JSON.parse(txt) : {}; } catch (_) { data = { error: txt }; }
+  if (!r.ok) throw new Error(data.error || `${r.status}`);
+  return data;
+}
+
+function setConnected(s) {
+  const badge = $('#status');
+  if (s.connected) {
+    badge.className = 'badge on';
+    badge.textContent = 'connected';
+    $('#institution').textContent = (s.items || []).length ? `— ${s.items.map(i => i.institution_name).join(', ')}` : '';
+    $('#btn-connect').textContent = 'Reconnect';
+    $('#btn-sync').disabled = false;
+    $('#btn-disconnect').disabled = false;
+  } else {
+    badge.className = 'badge off';
+    badge.textContent = 'not connected';
+    $('#institution').textContent = '';
+    $('#btn-connect').textContent = 'Connect with Plaid';
+    $('#btn-sync').disabled = true;
+    $('#btn-disconnect').disabled = true;
+  }
+}
+
+async function refreshStatus() {
+  try {
+    setConnected(await api('/plaid/status'));
+  } catch (e) {
+    showError(e.message);
+  }
+}
+
+async function refreshUpcoming() {
+  const root = $('#upcoming');
+  try {
+    const { upcoming } = await api('/plaid/liabilities');
+    if (!upcoming || upcoming.length === 0) {
+      root.textContent = '(no upcoming payments)';
+      return;
+    }
+    upcoming.sort((a, b) => (a.due_date || '').localeCompare(b.due_date || ''));
+    let html = '<table><thead><tr><th>Due</th><th>Creditor</th><th class="num">Principal</th><th class="num">APR</th><th>Memo</th></tr></thead><tbody>';
+    for (const r of upcoming) {
+      const apr = (Number(r.apr) * 100).toFixed(2) + '%';
+      html += `<tr><td>${r.due_date}</td><td>${r.creditor}</td><td class="num">$${Number(r.principal).toFixed(2)}</td><td class="num">${apr}</td><td>${r.memo || ''}</td></tr>`;
+    }
+    html += '</tbody></table>';
+    root.innerHTML = html;
+  } catch (e) {
+    root.innerHTML = `<div class="err">${e.message}</div>`;
+  }
+}
+
+async function startConnect() {
+  showError(null);
+  let linkToken;
+  try {
+    ({ link_token: linkToken } = await api('/plaid/link-token'));
+  } catch (e) {
+    return showError(e.message);
+  }
+
+  const handler = Plaid.create({
+    token: linkToken,
+    onSuccess: async (publicToken) => {
+      try {
+        await api('/plaid/exchange', {
+          method: 'POST',
+          body: JSON.stringify({ public_token: publicToken }),
+        });
+        await refreshStatus();
+        await refreshUpcoming();
+      } catch (e) {
+        showError(e.message);
+      }
+    },
+    onExit: (err) => { if (err) showError(err.display_message || err.error_message || 'Link exited'); },
+  });
+  handler.open();
+}
+
+async function disconnect() {
+  showError(null);
+  try {
+    await api('/plaid/disconnect', { method: 'POST', body: '{}' });
+    await refreshStatus();
+    $('#upcoming').textContent = '(connect to see upcoming payments)';
+  } catch (e) {
+    showError(e.message);
+  }
+}
+
+async function syncToLedger() {
+  showError(null);
+  const btn = $('#btn-sync');
+  btn.disabled = true;
+  const prior = btn.textContent;
+  btn.textContent = 'Syncing…';
+  try {
+    const { count, synced } = await api('/plaid/sync', { method: 'POST' });
+    btn.textContent = `Synced ${count} debt entr${count === 1 ? 'y' : 'ies'}`;
+    console.log('synced ids:', synced);
+    await refreshUpcoming();
+  } catch (e) {
+    showError(e.message);
+    btn.textContent = prior;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+$('#btn-connect').addEventListener('click', startConnect);
+$('#btn-disconnect').addEventListener('click', disconnect);
+$('#btn-sync').addEventListener('click', syncToLedger);
+
+(async () => {
+  await refreshStatus();
+  // Only attempt to render upcoming payments if connected; otherwise the
+  // 401 from /plaid/liabilities is expected and not worth showing.
+  const s = await api('/plaid/status').catch(() => null);
+  if (s?.connected) refreshUpcoming();
+})();
+</script>
+</body>
+</html>

@@ -9,3 +9,5 @@ wallet.json
 *.egg-info/
 .pytest_cache/
 
+plaid_token.json
+ios/*.xcodeproj/
